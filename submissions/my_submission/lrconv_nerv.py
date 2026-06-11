@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from math import ceil
 
 class LRConv2d(nn.Module):
@@ -148,6 +149,7 @@ class NeRVBlockLR(nn.Module):
         super().__init__()
         dec_block = kargs.get('dec_block', True)
         conv_fn = UpConvLR if dec_block else DownConvLR
+        self.stride = kargs.get('strd', 1)
         
         self.conv = conv_fn(
             ngf=kargs['ngf'],
@@ -177,6 +179,7 @@ class HNeRVGenerator(nn.Module):
         
         # Decoder stages
         self.layers = nn.ModuleList()
+        self.skips = nn.ModuleList()
         in_ch = fc_dim
         for stride, out_ch in zip(dec_strides, dec_channels):
             self.layers.append(
@@ -193,6 +196,10 @@ class HNeRVGenerator(nn.Module):
                     bottleneck_ratio=bottleneck_ratio
                 )
             )
+            # Bilinear 1x1 conv skip projection
+            self.skips.append(
+                nn.Conv2d(in_ch, out_ch, kernel_size=1, bias=False) if in_ch != out_ch else nn.Identity()
+            )
             in_ch = out_ch
             
         # Final color projection
@@ -201,8 +208,10 @@ class HNeRVGenerator(nn.Module):
     def forward(self, x):
         x = self.mlp(x)
         x = x.view(-1, self.fc_dim, self.fc_h, self.fc_w)
-        for layer in self.layers:
-            x = layer(x)
+        for layer, skip in zip(self.layers, self.skips):
+            identity = F.interpolate(x, scale_factor=layer.stride, mode='bilinear', align_corners=False)
+            identity = skip(identity)
+            x = layer(x) + identity
         x = self.final_conv(x)
         return torch.sigmoid(x)
 
