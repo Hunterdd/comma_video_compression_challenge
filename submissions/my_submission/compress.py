@@ -164,13 +164,14 @@ def main():
             indices = torch.randperm(num_frames)
             
             for i in range(0, num_frames, args.batch_size):
-                batch_indices = indices[i:i + args.batch_size].to(device)
+                batch_indices_cpu = indices[i:i + args.batch_size]
+                batch_indices_device = batch_indices_cpu.to(device)
                 
-                # Fetch targets and permute to NCHW, normalized to [0, 1]
-                targets = frames[batch_indices].to(device).float().permute(0, 3, 1, 2) / 255.0
+                # Fetch targets on CPU, then send to device
+                targets = frames[batch_indices_cpu].to(device).float().permute(0, 3, 1, 2) / 255.0
                 
                 optimizer.zero_grad()
-                outputs = model(batch_indices)
+                outputs = model(batch_indices_device)
                 
                 # Hybrid L1 + SSIM Loss
                 loss_l1 = l1_loss_fn(outputs, targets)
@@ -180,9 +181,9 @@ def main():
                 loss.backward()
                 optimizer.step()
                 
-                epoch_loss += loss.item() * len(batch_indices)
-                epoch_l1 += loss_l1.item() * len(batch_indices)
-                epoch_ssim += (1 - loss_ssim.item()) * len(batch_indices)
+                epoch_loss += loss.item() * len(batch_indices_cpu)
+                epoch_l1 += loss_l1.item() * len(batch_indices_cpu)
+                epoch_ssim += (1 - loss_ssim.item()) * len(batch_indices_cpu)
                 
             scheduler.step()
             
