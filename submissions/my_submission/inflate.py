@@ -1,31 +1,101 @@
-#!/usr/bin/env python
-import av, torch
+import os
+import sys
+import argparse
+from pathlib import Path
+
+import torch
 import torch.nn.functional as F
-from frame_utils import camera_size, yuv420_to_rgb
 
+# Add root folder to path to import utilities
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent.parent
+sys.path.append(str(ROOT))
+sys.path.append(str(HERE))
 
-def decode_and_resize_to_file(video_path: str, dst: str):
-  target_w, target_h = camera_size
-  fmt = 'hevc' if video_path.endswith('.hevc') else None
-  container = av.open(video_path, format=fmt)
-  stream = container.streams.video[0]
-  n = 0
-  with open(dst, 'wb') as f:
-    for frame in container.decode(stream):
-      t = yuv420_to_rgb(frame)  # (H, W, 3)
-      H, W, _ = t.shape
-      if H != target_h or W != target_w:
-        x = t.permute(2, 0, 1).unsqueeze(0).float()  # (1, C, H, W)
-        x = F.interpolate(x, size=(target_h, target_w), mode='bicubic', align_corners=False)
-        t = x.clamp(0, 255).squeeze(0).permute(1, 2, 0).round().to(torch.uint8)
-      f.write(t.contiguous().numpy().tobytes())
-      n += 1
-  container.close()
-  return n
+from frame_utils import camera_size
+from lrconv_nerv import HNeRVModel, load_quantized_weights
 
+def main():
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <src_weight_file> <dst_raw>")
+        sys.exit(1)
+        
+    src, dst = sys.argv[1], sys.argv[2]
+    
+    if not os.path.exists(src):
+        print(f"ERROR: Weights file {src} not found!")
+        sys.exit(1)
+        
+    # Auto-detect device
+    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+    print(f"Decoding on device: {device}")
+    
+    # Load raw quantized dict to read metadata first (N = num_frames)
+    print(f"Reading metadata from {src}...")
+    quantized_dict = torch.load(src, map_location='cpu')
+    metadata = quantized_dict.get('metadata', {})
+    N = metadata.get('num_frames', 1200)
+    
+    target_w, target_h = camera_size
+    print(f"Video frames to reconstruct: {N} | Target Resolution: {target_w}x{target_h}")
+    
+    # Spatial configuration (matching compress.py)
+    fc_hw = (6, 8)
+    dec_strides = [2, 2, 2, 2, 2, 2]
+    dec_channels = [96, 64, 48, 32, 24, 16]
+    ks_dec = 3
+    
+    # Initialize HNeRV model
+    model = HNeRVModel(
+        num_frames=N,
+        embed_dim=16,       # Matching default in compress.py
+        fc_hw=fc_hw,
+        dec_strides=dec_strides,
+        fc_dim=128,         # Matching default in compress.py
+        dec_channels=dec_channels,
+        ks_dec=ks_dec,
+        conv_type='lrconv',
+        bottleneck_ratio=0.25
+    ).to(device)
+    
+    # Load quantized weights
+    print(f"Loading weights into model...")
+    load_quantized_weights(model, src, device)
+    model.eval()
+    
+    batch_size = 16
+    n_written = 0
+    
+    # Reconstruct frames in batches and write to binary raw file
+    with open(dst, 'wb') as f:
+        with torch.no_grad():
+            for i in range(0, N, batch_size):
+                end_idx = min(i + batch_size, N)
+                batch_indices = torch.arange(i, end_idx, dtype=torch.long, device=device)
+                
+                # Reconstruct downscaled frames: (B, 3, 384, 512)
+                outputs = model(batch_indices)
+                
+                # Upscale to original resolution (H, W) = (874, 1164)
+                outputs_resized = F.interpolate(
+                    outputs,
+                    size=(target_h, target_w),
+                    mode='bicubic',
+                    align_corners=False
+                )
+                
+                # Convert back to uint8 RGB: (B, H, W, 3)
+                frames = outputs_resized.clamp(0.0, 1.0) * 255.0
+                frames = frames.round().to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
+                
+                # Dump flat bytes
+                f.write(frames.tobytes())
+                n_written += len(frames)
+                
+                if n_written % 160 == 0 or n_written == N:
+                    print(f"Decoded {n_written}/{N} frames...")
+                    
+    print(f"Successfully saved {n_written} raw frames to {dst}")
 
 if __name__ == "__main__":
-  import sys
-  src, dst = sys.argv[1], sys.argv[2]
-  n = decode_and_resize_to_file(src, dst)
-  print(f"saved {n} frames")
+    main()

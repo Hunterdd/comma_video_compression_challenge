@@ -17,12 +17,14 @@ mkdir -p "$OUTPUT_DIR"
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   BASE="${line%.*}"
-  SRC="${DATA_DIR}/${BASE}.mkv"
+  
+  # The compressed weights file in the unzipped archive folder
+  SRC="${DATA_DIR}/${BASE}.pth"
   DST="${OUTPUT_DIR}/${BASE}.raw"
 
   [ ! -f "$SRC" ] && echo "ERROR: ${SRC} not found" >&2 && exit 1
 
-  printf "Decoding + resizing %s ... " "$line"
+  printf "Decoding HNeRV model for %s ... " "$line"
   cd "$ROOT"
   python -m "submissions.${SUB_NAME}.inflate" "$SRC" "$DST"
 done < "$FILE_LIST"
