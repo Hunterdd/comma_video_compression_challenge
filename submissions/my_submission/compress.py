@@ -18,7 +18,7 @@ sys.path.append(str(HERE))
 
 import av
 from frame_utils import yuv420_to_rgb
-from lrconv_nerv import HNeRVModel, save_quantized_weights
+from lrconv_nerv import HNeRVModel, save_quantized_weights, Muon
 
 # SSIM Loss Implementation in PyTorch
 def gaussian(window_size, sigma):
@@ -144,9 +144,23 @@ def main():
         num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Model initialized. Total trainable parameters: {num_params:,} (~{num_params * 4 / 1024:.1f} KB in float32, ~{num_params / 1024:.1f} KB quantized)")
 
-        # Optimizer and schedulers
-        optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
+        # Split model parameters for Muon + AdamW
+        muon_params = []
+        adamw_params = []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            # Muon for 2D/4D weights (excluding embeddings)
+            if p.ndim >= 2 and 'embeddings' not in name:
+                muon_params.append(p)
+            else:
+                adamw_params.append(p)
+
+        optimizer_muon = Muon(muon_params, lr=args.lr, weight_decay=1e-4) if muon_params else None
+        optimizer_adamw = optim.AdamW(adamw_params, lr=args.lr * 0.1, weight_decay=1e-4) if adamw_params else None
+
+        scheduler_muon = optim.lr_scheduler.CosineAnnealingLR(optimizer_muon, T_max=args.epochs, eta_min=args.lr * 0.01) if optimizer_muon else None
+        scheduler_adamw = optim.lr_scheduler.CosineAnnealingLR(optimizer_adamw, T_max=args.epochs, eta_min=args.lr * 0.1 * 0.01) if optimizer_adamw else None
         
         # Loss functions
         l1_loss_fn = nn.L1Loss()
@@ -170,7 +184,11 @@ def main():
                 # Fetch targets on CPU, then send to device
                 targets = frames[batch_indices_cpu].to(device).float().permute(0, 3, 1, 2) / 255.0
                 
-                optimizer.zero_grad()
+                if optimizer_muon:
+                    optimizer_muon.zero_grad()
+                if optimizer_adamw:
+                    optimizer_adamw.zero_grad()
+                
                 outputs = model(batch_indices_device)
                 
                 # Hybrid L1 + SSIM Loss
@@ -179,13 +197,20 @@ def main():
                 loss = 0.40 * loss_l1 + 0.60 * loss_ssim
                 
                 loss.backward()
-                optimizer.step()
+                
+                if optimizer_muon:
+                    optimizer_muon.step()
+                if optimizer_adamw:
+                    optimizer_adamw.step()
                 
                 epoch_loss += loss.item() * len(batch_indices_cpu)
                 epoch_l1 += loss_l1.item() * len(batch_indices_cpu)
                 epoch_ssim += (1 - loss_ssim.item()) * len(batch_indices_cpu)
                 
-            scheduler.step()
+            if scheduler_muon:
+                scheduler_muon.step()
+            if scheduler_adamw:
+                scheduler_adamw.step()
             
             epoch_loss /= num_frames
             epoch_l1 /= num_frames
