@@ -26,11 +26,11 @@ python "${HERE}/compress.py" \
   --in-dir "$IN_DIR" \
   --archive-dir "$ARCHIVE_DIR" \
   --video-names-file "$VIDEO_NAMES_FILE" \
-  --epochs 150 \
+  --epochs 500 \
   --lr 0.005 \
   --batch-size 4 \
-  --embed-dim 16 \
+  --embed-dim 32 \
   --fc-dim 128 \
-  --bottleneck-ratio 0.25
+  --bottleneck-ratio 0.50
 
 echo "HNeRV-LRConv compression finished."

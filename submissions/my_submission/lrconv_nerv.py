@@ -19,7 +19,8 @@ class LRConv2d(nn.Module):
         sh, sw = (stride, stride) if isinstance(stride, int) else stride
             
         # Compute bottleneck rank r
-        self.r = ceil(bottleneck_ratio * min(in_channels, out_channels))
+        # Enforce a minimum rank (e.g., minimum of 8 or 12)
+        self.r = max(8, ceil(bottleneck_ratio * min(in_channels, out_channels)))
         
         # First Stage: Vertical spatial convolution (kh x 1) compressing channels C_in -> r
         self.conv_v = nn.Conv2d(

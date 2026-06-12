@@ -112,9 +112,9 @@ def main():
     os.makedirs(args.archive_dir, exist_ok=True)
 
     # Spatial configuration (Strides [2, 2, 2, 2, 2, 2] maps 6x8 to 384x512)
-    fc_hw = (6, 8)
-    dec_strides = [2, 2, 2, 2, 2, 2]
-    dec_channels = [96, 64, 48, 32, 24, 16]
+    fc_hw = (7,9)
+    dec_strides = [2, 2, 2, 2, 2, 2,2]
+    dec_channels = [128,96, 64, 48, 32, 24, 16]
     ks_dec = 3
 
     for video_name in video_names:
@@ -124,7 +124,7 @@ def main():
             continue
 
         # Load video frames (resizing to 384x512)
-        frames = load_video_frames(video_path, target_size=(384, 512))
+        frames = load_video_frames(video_path, target_size=(448,576))
         num_frames = len(frames)
 
         # Initialize HNeRV model with LRConv-NeRV decoder
@@ -176,7 +176,7 @@ def main():
                 # Hybrid L1 + SSIM Loss
                 loss_l1 = l1_loss_fn(outputs, targets)
                 loss_ssim = ssim_loss_fn(outputs, targets)
-                loss = 0.15 * loss_l1 + 0.85 * loss_ssim
+                loss = 0.40 * loss_l1 + 0.60 * loss_ssim
                 
                 loss.backward()
                 optimizer.step()
