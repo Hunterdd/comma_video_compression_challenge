@@ -88,6 +88,9 @@ def main():
                     align_corners=False
                 )
                 
+                # Nudge to red channel
+                outputs_resized[:, 0, :, :].add_(1.0 / 255.0)
+                
                 # Convert back to uint8 RGB: (B, H, W, 3)
                 frames = outputs_resized.clamp(0.0, 1.0) * 255.0
                 frames = frames.round().to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()

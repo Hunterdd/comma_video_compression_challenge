@@ -18,7 +18,32 @@ sys.path.append(str(HERE))
 
 import av
 from frame_utils import yuv420_to_rgb
-from lrconv_nerv import HNeRVModel, save_quantized_weights, Muon
+from lrconv_nerv import HNeRVModel, save_quantized_weights
+
+
+# Quantization Aware Training (QAT) with Straight-Through Estimator (STE)
+def fake_quantize(tensor, n_levels=255):
+    v_min = tensor.min()
+    v_max = tensor.max()
+    if v_max == v_min:
+        return tensor
+    scale = n_levels / (v_max - v_min)
+    q = ((tensor - v_min) * scale).round().clamp(0, n_levels)
+    dq = v_min + q / scale
+    return (dq - tensor).detach() + tensor
+
+def apply_qat(model):
+    originals = {}
+    for name, p in model.named_parameters():
+        if p.requires_grad and p.is_floating_point():
+            originals[name] = p.data.clone()
+            p.data.copy_(fake_quantize(p.data))
+    return originals
+
+def restore_qat(model, originals):
+    for name, p in model.named_parameters():
+        if name in originals:
+            p.data.copy_(originals[name])
 
 
 # Loader logic
@@ -101,26 +126,9 @@ def main():
         num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Model initialized. Total trainable parameters: {num_params:,} (~{num_params * 4 / 1024:.1f} KB in float32, ~{num_params / 1024:.1f} KB quantized)")
 
-        # Split model parameters for Muon + AdamW
-        muon_params = []
-        adamw_params = []
-        for name, p in model.named_parameters():
-            if not p.requires_grad:
-                continue
-            # Muon for 2D/4D weights (excluding embeddings)
-            if p.ndim >= 2 and 'embeddings' not in name:
-                muon_params.append(p)
-            else:
-                adamw_params.append(p)
-
-        optimizer_muon = Muon(muon_params, lr=args.lr, weight_decay=1e-4) if muon_params else None
-        optimizer_adamw = optim.AdamW(adamw_params, lr=args.lr * 0.1, weight_decay=1e-4) if adamw_params else None
-
-        scheduler_muon = optim.lr_scheduler.CosineAnnealingLR(optimizer_muon, T_max=args.epochs, eta_min=args.lr * 0.01) if optimizer_muon else None
-        scheduler_adamw = optim.lr_scheduler.CosineAnnealingLR(optimizer_adamw, T_max=args.epochs, eta_min=args.lr * 0.1 * 0.01) if optimizer_adamw else None
-        
-        # Loss functions - We use pixel-level MSE and frozen networks (PoseNet, SegNet)
-        # We don't need l1_loss_fn or ssim_loss_fn
+        # Optimizer and Scheduler (Standard AdamW + Cosine Annealing)
+        optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
 
         model.train()
         print(f"Starting training on {video_name} for {args.epochs} epochs...")
@@ -138,29 +146,31 @@ def main():
                 # Fetch targets on CPU, then send to device
                 targets = frames[batch_indices_cpu].to(device).float().permute(0, 3, 1, 2) / 255.0
                 
-                if optimizer_muon:
-                    optimizer_muon.zero_grad()
-                if optimizer_adamw:
-                    optimizer_adamw.zero_grad()
+                if optimizer:
+                    optimizer.zero_grad()
+                
+                # Apply QAT fake-quantization to weights before forward pass
+                originals = apply_qat(model)
                 
                 outputs = model(batch_indices_device)
                 
-                # Pixel MSE Loss
-                loss = F.mse_loss(outputs, targets)
+                # Pixel MSE Loss with square root scaling
+                mse = F.mse_loss(outputs, targets)
+                # Add 1e-12 to prevent NaN errors when taking the derivative of a square root near zero
+                loss = torch.sqrt(10.0 * mse + 1e-12)
                 
                 loss.backward()
                 
-                if optimizer_muon:
-                    optimizer_muon.step()
-                if optimizer_adamw:
-                    optimizer_adamw.step()
+                # Restore original full-precision weights before optimizer step
+                restore_qat(model, originals)
+                
+                if optimizer:
+                    optimizer.step()
                 
                 epoch_loss += loss.item() * len(batch_indices_cpu)
                 
-            if scheduler_muon:
-                scheduler_muon.step()
-            if scheduler_adamw:
-                scheduler_adamw.step()
+            if scheduler:
+                scheduler.step()
             
             epoch_loss /= num_frames
             

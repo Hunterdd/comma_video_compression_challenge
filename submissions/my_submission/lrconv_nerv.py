@@ -296,6 +296,8 @@ def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
     if G.size(-2) > G.size(-1):
         X = X.mT
     return X.to(G.dtype)
+
+    
 class Muon(torch.optim.Optimizer):
     def __init__(self, params, lr=0.02, momentum=0.95, weight_decay=0.01, ns_steps=5, nesterov=True):
         defaults = dict(
