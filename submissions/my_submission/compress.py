@@ -20,51 +20,6 @@ import av
 from frame_utils import yuv420_to_rgb
 from lrconv_nerv import HNeRVModel, save_quantized_weights, Muon
 
-# SSIM Loss Implementation in PyTorch
-def gaussian(window_size, sigma):
-    gauss = torch.Tensor([math.exp(-(x - window_size//2)**2/float(2*sigma**2)) for x in range(window_size)])
-    return gauss/gauss.sum()
-
-def create_window(window_size, channel):
-    _1D_window = gaussian(window_size, 1.5).unsqueeze(1)
-    _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
-    window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
-    return window
-
-def ssim(img1, img2, window_size=11, size_average=True):
-    channel = img1.size(1)
-    window = create_window(window_size, channel).to(img1.device)
-    
-    mu1 = F.conv2d(img1, window, padding=window_size//2, groups=channel)
-    mu2 = F.conv2d(img2, window, padding=window_size//2, groups=channel)
-    
-    mu1_sq = mu1.pow(2)
-    mu2_sq = mu2.pow(2)
-    mu1_mu2 = mu1 * mu2
-    
-    sigma1_sq = F.conv2d(img1 * img1, window, padding=window_size//2, groups=channel) - mu1_sq
-    sigma2_sq = F.conv2d(img2 * img2, window, padding=window_size//2, groups=channel) - mu2_sq
-    sigma12 = F.conv2d(img1 * img2, window, padding=window_size//2, groups=channel) - mu1_mu2
-    
-    C1 = 0.01 ** 2
-    C2 = 0.03 ** 2
-    
-    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-    
-    if size_average:
-        return ssim_map.mean()
-    else:
-        return ssim_map.mean(1).mean(1).mean(1)
-
-class SSIMLoss(nn.Module):
-    def __init__(self, window_size=11, size_average=True):
-        super().__init__()
-        self.window_size = window_size
-        self.size_average = size_average
-        
-    def forward(self, img1, img2):
-        return 1 - ssim(img1, img2, self.window_size, self.size_average)
-
 
 # Loader logic
 def load_video_frames(video_path, target_size=(384, 512)):
@@ -103,6 +58,8 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
     print(f"Training on device: {device}")
+
+    # No distortion network needed (training with Pixel MSE only)
 
     # Read target videos
     with open(args.video_names_file, "r") as f:
@@ -162,17 +119,14 @@ def main():
         scheduler_muon = optim.lr_scheduler.CosineAnnealingLR(optimizer_muon, T_max=args.epochs, eta_min=args.lr * 0.01) if optimizer_muon else None
         scheduler_adamw = optim.lr_scheduler.CosineAnnealingLR(optimizer_adamw, T_max=args.epochs, eta_min=args.lr * 0.1 * 0.01) if optimizer_adamw else None
         
-        # Loss functions
-        l1_loss_fn = nn.L1Loss()
-        ssim_loss_fn = SSIMLoss()
+        # Loss functions - We use pixel-level MSE and frozen networks (PoseNet, SegNet)
+        # We don't need l1_loss_fn or ssim_loss_fn
 
         model.train()
         print(f"Starting training on {video_name} for {args.epochs} epochs...")
         
         for epoch in range(1, args.epochs + 1):
             epoch_loss = 0.0
-            epoch_l1 = 0.0
-            epoch_ssim = 0.0
             
             # Shuffle indices
             indices = torch.randperm(num_frames)
@@ -191,10 +145,8 @@ def main():
                 
                 outputs = model(batch_indices_device)
                 
-                # Hybrid L1 + SSIM Loss
-                loss_l1 = l1_loss_fn(outputs, targets)
-                loss_ssim = ssim_loss_fn(outputs, targets)
-                loss = 0.40 * loss_l1 + 0.60 * loss_ssim
+                # Pixel MSE Loss
+                loss = F.mse_loss(outputs, targets)
                 
                 loss.backward()
                 
@@ -204,8 +156,6 @@ def main():
                     optimizer_adamw.step()
                 
                 epoch_loss += loss.item() * len(batch_indices_cpu)
-                epoch_l1 += loss_l1.item() * len(batch_indices_cpu)
-                epoch_ssim += (1 - loss_ssim.item()) * len(batch_indices_cpu)
                 
             if scheduler_muon:
                 scheduler_muon.step()
@@ -213,11 +163,9 @@ def main():
                 scheduler_adamw.step()
             
             epoch_loss /= num_frames
-            epoch_l1 /= num_frames
-            epoch_ssim /= num_frames
             
             if epoch % 10 == 0 or epoch == args.epochs:
-                print(f"Epoch [{epoch}/{args.epochs}] | Loss: {epoch_loss:.6f} | L1: {epoch_l1:.6f} | SSIM: {epoch_ssim:.4f}")
+                print(f"Epoch [{epoch}/{args.epochs}] | Loss: {epoch_loss:.6f}")
 
         # Quantize and save model state dict along with metadata
         model.eval()
