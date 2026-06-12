@@ -177,6 +177,8 @@ class HNeRVGenerator(nn.Module):
         
         # Linear layer mapping embedding -> starting feature map
         self.mlp = nn.Linear(embed_dim, fc_dim * self.fc_h * self.fc_w)
+        # GroupNorm to stabilize stem activations
+        self.stem_norm = nn.GroupNorm(1, fc_dim)
         
         # Decoder stages
         self.layers = nn.ModuleList()
@@ -209,10 +211,11 @@ class HNeRVGenerator(nn.Module):
     def forward(self, x):
         x = self.mlp(x)
         x = x.view(-1, self.fc_dim, self.fc_h, self.fc_w)
+        x = self.stem_norm(x)
         for layer, skip in zip(self.layers, self.skips):
             identity = F.interpolate(x, scale_factor=layer.stride, mode='bilinear', align_corners=False)
             identity = skip(identity)
-            x = layer(x) + identity
+            x = layer(x) + 0.1 * identity
         x = self.final_conv(x)
         return torch.sigmoid(x)
 
@@ -277,91 +280,3 @@ def load_quantized_weights(model, file_path, device):
             state_dict[k] = v.to(device)
     model.load_state_dict(state_dict)
     return metadata
-
-def zeropower_via_newtonschulz5(G, steps=5, eps=1e-7):
-    """
-    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G.
-    """
-    assert G.ndim >= 2
-    a, b, c = (3.4445, -4.7750, 2.0315)
-    X = G.to(torch.bfloat16)
-    # Ensure spectral norm is at most 1
-    X = X / (X.norm(dim=(-2, -1), keepdim=True) + eps)
-    if G.size(-2) > G.size(-1):
-        X = X.mT
-    for _ in range(steps):
-        A = X @ X.mT
-        B = b * A + c * A @ A
-        X = a * X + B @ X
-    if G.size(-2) > G.size(-1):
-        X = X.mT
-    return X.to(G.dtype)
-
-    
-class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=0.02, momentum=0.95, weight_decay=0.01, ns_steps=5, nesterov=True):
-        defaults = dict(
-            lr=lr,
-            momentum=momentum,
-            weight_decay=weight_decay,
-            ns_steps=ns_steps,
-            nesterov=nesterov
-        )
-        super().__init__(params, defaults)
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
-        for group in self.param_groups:
-            lr = group['lr']
-            momentum = group['momentum']
-            weight_decay = group['weight_decay']
-            ns_steps = group['ns_steps']
-            nesterov = group['nesterov']
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-                g = p.grad
-                
-                # Apply decoupled weight decay
-                if weight_decay != 0:
-                    p.mul_(1 - lr * weight_decay)
-                
-                state = self.state[p]
-                if 'momentum_buffer' not in state:
-                    state['momentum_buffer'] = torch.zeros_like(p)
-                buf = state['momentum_buffer']
-                
-                # Update momentum buffer
-                buf.lerp_(g, 1 - momentum)
-                
-                # Nesterov momentum
-                if nesterov:
-                    update = g.lerp(buf, momentum)
-                else:
-                    update = buf
-                
-                # If parameter has >= 2 dimensions, apply Newton-Schulz orthogonalization
-                if update.ndim >= 2:
-                    orig_shape = update.shape
-                    if update.ndim > 2:
-                        update = update.flatten(1)
-                    
-                    # Compute orthogonal update
-                    orth_update = zeropower_via_newtonschulz5(update, steps=ns_steps)
-                    
-                    # Aspect ratio scaling
-                    scale = (max(update.size(0), update.size(1)) / min(update.size(0), update.size(1))) ** 0.5
-                    orth_update = orth_update * scale
-                    
-                    # Reshape back to original parameter shape
-                    orth_update = orth_update.view(orig_shape)
-                    
-                    p.add_(orth_update, alpha=-lr)
-                else:
-                    # Fallback standard SGD update for 1D parameters (biases, gains, etc.)
-                    p.add_(update, alpha=-lr)
-                    
-        return loss
