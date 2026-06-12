@@ -111,10 +111,10 @@ def main():
     # Ensure archive directory exists
     os.makedirs(args.archive_dir, exist_ok=True)
 
-    # Spatial configuration (Strides [2, 2, 2, 2, 2, 2] maps 6x8 to 384x512)
-    fc_hw = (7,9)
-    dec_strides = [2, 2, 2, 2, 2, 2,2]
-    dec_channels = [128,96, 64, 48, 32, 24, 16]
+    # Spatial configuration (Strides [2, 2, 2, 2, 2, 2] maps 7x9 to 448x576)
+    fc_hw = (7, 9)
+    dec_strides = [2, 2, 2, 2, 2, 2]
+    dec_channels = [128, 96, 64, 48, 32, 24]
     ks_dec = 3
 
     for video_name in video_names:
@@ -199,7 +199,17 @@ def main():
         base_name = Path(video_name).stem
         weight_file = Path(args.archive_dir) / f"{base_name}.pth"
         print(f"Quantizing and saving weights to {weight_file}...")
-        metadata = {'num_frames': num_frames}
+        metadata = {
+            'num_frames': num_frames,
+            'embed_dim': args.embed_dim,
+            'fc_hw': fc_hw,
+            'dec_strides': dec_strides,
+            'fc_dim': args.fc_dim,
+            'dec_channels': dec_channels,
+            'ks_dec': ks_dec,
+            'conv_type': 'lrconv',
+            'bottleneck_ratio': args.bottleneck_ratio
+        }
         save_quantized_weights(model.state_dict(), metadata, weight_file)
 
     # Package into archive.zip

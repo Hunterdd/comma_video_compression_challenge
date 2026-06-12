@@ -39,23 +39,27 @@ def main():
     target_w, target_h = camera_size
     print(f"Video frames to reconstruct: {N} | Target Resolution: {target_w}x{target_h}")
     
-    # Spatial configuration (matching compress.py)
-    fc_hw = (6, 8)
-    dec_strides = [2, 2, 2, 2, 2, 2]
-    dec_channels = [96, 64, 48, 32, 24, 16]
-    ks_dec = 3
+    # Read model configuration from metadata or use defaults
+    embed_dim = metadata.get('embed_dim', 16)
+    fc_hw = metadata.get('fc_hw', (6, 8))
+    dec_strides = metadata.get('dec_strides', [2, 2, 2, 2, 2, 2])
+    fc_dim = metadata.get('fc_dim', 128)
+    dec_channels = metadata.get('dec_channels', [96, 64, 48, 32, 24, 16])
+    ks_dec = metadata.get('ks_dec', 3)
+    conv_type = metadata.get('conv_type', 'lrconv')
+    bottleneck_ratio = metadata.get('bottleneck_ratio', 0.25)
     
     # Initialize HNeRV model
     model = HNeRVModel(
         num_frames=N,
-        embed_dim=16,       # Matching default in compress.py
+        embed_dim=embed_dim,
         fc_hw=fc_hw,
         dec_strides=dec_strides,
-        fc_dim=128,         # Matching default in compress.py
+        fc_dim=fc_dim,
         dec_channels=dec_channels,
         ks_dec=ks_dec,
-        conv_type='lrconv',
-        bottleneck_ratio=0.25
+        conv_type=conv_type,
+        bottleneck_ratio=bottleneck_ratio
     ).to(device)
     
     # Load quantized weights
