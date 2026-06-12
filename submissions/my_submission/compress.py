@@ -79,6 +79,7 @@ def main():
     parser.add_argument("--embed-dim", type=int, default=16, help="HNeRV frame embedding dimension")
     parser.add_argument("--fc-dim", type=int, default=128, help="MLP projected starting channels")
     parser.add_argument("--bottleneck-ratio", type=float, default=0.25, help="LRConv bottleneck ratio")
+    parser.add_argument("--ft-epochs", type=int, default=30, help="number of epochs for QAT + sqrt loss fine-tuning")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
@@ -130,11 +131,13 @@ def main():
         optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
 
+        base_epochs = max(0, args.epochs - args.ft_epochs)
         model.train()
-        print(f"Starting training on {video_name} for {args.epochs} epochs...")
+        print(f"Starting training on {video_name} for {args.epochs} epochs ({base_epochs} Base epochs + {args.epochs - base_epochs} FT epochs)...")
         
         for epoch in range(1, args.epochs + 1):
             epoch_loss = 0.0
+            is_ft = (epoch > base_epochs)
             
             # Shuffle indices
             indices = torch.randperm(num_frames)
@@ -149,20 +152,27 @@ def main():
                 if optimizer:
                     optimizer.zero_grad()
                 
-                # Apply QAT fake-quantization to weights before forward pass
-                originals = apply_qat(model)
+                # Apply QAT fake-quantization to weights before forward pass only in FT stage
+                if is_ft:
+                    originals = apply_qat(model)
                 
                 outputs = model(batch_indices_device)
                 
-                # Pixel MSE Loss with square root scaling
+                # Compute standard MSE
                 mse = F.mse_loss(outputs, targets)
-                # Add 1e-12 to prevent NaN errors when taking the derivative of a square root near zero
-                loss = torch.sqrt(10.0 * mse + 1e-12)
+                
+                # Use PoseNet-aligned square-root loss in FT stage, standard MSE in base stage
+                if is_ft:
+                    # Add 1e-12 to prevent NaN errors when taking the derivative of a square root near zero
+                    loss = torch.sqrt(10.0 * mse + 1e-12)
+                else:
+                    loss = mse
                 
                 loss.backward()
                 
-                # Restore original full-precision weights before optimizer step
-                restore_qat(model, originals)
+                # Restore original full-precision weights before optimizer step only in FT stage
+                if is_ft:
+                    restore_qat(model, originals)
                 
                 if optimizer:
                     optimizer.step()
@@ -175,7 +185,8 @@ def main():
             epoch_loss /= num_frames
             
             if epoch % 10 == 0 or epoch == args.epochs:
-                print(f"Epoch [{epoch}/{args.epochs}] | Loss: {epoch_loss:.6f}")
+                stage_str = "FT (QAT+Sqrt)" if is_ft else "Base (MSE)"
+                print(f"Epoch [{epoch}/{args.epochs}] ({stage_str}) | Loss: {epoch_loss:.6f}")
 
         # Quantize and save model state dict along with metadata
         model.eval()
