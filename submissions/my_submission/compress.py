@@ -4,6 +4,8 @@ import math
 import zipfile
 import argparse
 from pathlib import Path
+import numpy as np
+import random
 
 import torch
 import torch.nn as nn
@@ -80,7 +82,17 @@ def main():
     parser.add_argument("--fc-dim", type=int, default=128, help="MLP projected starting channels")
     parser.add_argument("--bottleneck-ratio", type=float, default=0.25, help="LRConv bottleneck ratio")
     parser.add_argument("--ft-epochs", type=int, default=30, help="number of epochs for QAT + sqrt loss fine-tuning")
+    parser.add_argument("--seed", type=int, default=1234, help="random seed for reproducibility")
     args = parser.parse_args()
+
+    # Set seed for reproducibility
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
     print(f"Training on device: {device}")
@@ -174,6 +186,9 @@ def main():
                 if is_ft:
                     restore_qat(model, originals)
                 
+                # Gradient norm clipping to prevent NaNs/exploding gradients under the square-root loss
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
                 if optimizer:
                     optimizer.step()
                 
@@ -186,7 +201,14 @@ def main():
             
             if epoch % 10 == 0 or epoch == args.epochs:
                 stage_str = "FT (QAT+Sqrt)" if is_ft else "Base (MSE)"
-                print(f"Epoch [{epoch}/{args.epochs}] ({stage_str}) | Loss: {epoch_loss:.6f}")
+                lr_curr = optimizer.param_groups[0]['lr']
+                # Calculate gradient norm for debugging / sanity checking
+                grad_norm = 0.0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        grad_norm += p.grad.data.norm(2).item() ** 2
+                grad_norm = grad_norm ** 0.5
+                print(f"Epoch [{epoch}/{args.epochs}] ({stage_str}) | Loss: {epoch_loss:.6f} | LR: {lr_curr:.6f} | Grad Norm: {grad_norm:.6f}")
 
         # Quantize and save model state dict along with metadata
         model.eval()
