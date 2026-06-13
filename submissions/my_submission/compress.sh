@@ -33,6 +33,10 @@ python "${HERE}/compress.py" \
   --fc-dim 128 \
   --bottleneck-ratio 0.50 \
   --ft-epochs 50 \
+  --epochs-p1 50 \
+  --epochs-p2 25 \
+  --epochs-p3 25 \
+  --new-lr 0.001 \
   --seed 1234
 
 echo "HNeRV-LRConv compression finished."

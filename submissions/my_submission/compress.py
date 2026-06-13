@@ -82,6 +82,10 @@ def main():
     parser.add_argument("--fc-dim", type=int, default=128, help="MLP projected starting channels")
     parser.add_argument("--bottleneck-ratio", type=float, default=0.25, help="LRConv bottleneck ratio")
     parser.add_argument("--ft-epochs", type=int, default=30, help="number of epochs for QAT + sqrt loss fine-tuning")
+    parser.add_argument("--epochs-p1", type=int, default=None, help="number of training epochs for Phase 1")
+    parser.add_argument("--epochs-p2", type=int, default=None, help="number of training epochs for Phase 2")
+    parser.add_argument("--epochs-p3", type=int, default=None, help="number of training epochs for Phase 3")
+    parser.add_argument("--new-lr", type=float, default=0.001, help="learning rate for phase 2 and 3")
     parser.add_argument("--seed", type=int, default=1234, help="random seed for reproducibility")
     args = parser.parse_args()
 
@@ -139,27 +143,52 @@ def main():
         num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Model initialized. Total trainable parameters: {num_params:,} (~{num_params * 4 / 1024:.1f} KB in float32, ~{num_params / 1024:.1f} KB quantized)")
 
+        # Compute phase epochs
+        epochs_p1 = args.epochs_p1 if args.epochs_p1 is not None else max(0, args.epochs - args.ft_epochs)
+        epochs_p2 = args.epochs_p2 if args.epochs_p2 is not None else args.ft_epochs // 2
+        epochs_p3 = args.epochs_p3 if args.epochs_p3 is not None else args.ft_epochs - (args.ft_epochs // 2)
+        total_epochs = epochs_p1 + epochs_p2 + epochs_p3
+
         # Optimizer and Scheduler (Standard AdamW + Cosine Annealing)
         optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs_p1, eta_min=args.lr * 0.01)
 
-        base_epochs = max(0, args.epochs - args.ft_epochs)
         model.train()
-        print(f"Starting training on {video_name} for {args.epochs} epochs ({base_epochs} Base epochs + {args.epochs - base_epochs} FT epochs)...")
+        print(f"Starting training on {video_name} for {total_epochs} epochs:")
+        print(f"  Phase 1 (Base MSE, Clip 1.0, scheduler LR): {epochs_p1} epochs")
+        print(f"  Phase 2 (PoseNet loss, Clip 5.0, fixed LR={args.new_lr}): {epochs_p2} epochs")
+        print(f"  Phase 3 (PoseNet loss + QAT, Clip 5.0, fixed LR={args.new_lr}): {epochs_p3} epochs")
         
-        ft_scheduler_initialized = False
+        p2_transition_done = False
+        p3_transition_done = False
         
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(1, total_epochs + 1):
             epoch_loss = 0.0
-            is_ft = (epoch > base_epochs)
             
-            if is_ft and not ft_scheduler_initialized:
-                ft_lr = args.lr * 0.2
+            # Determine current phase
+            if epoch <= epochs_p1:
+                phase = 1
+            elif epoch <= epochs_p1 + epochs_p2:
+                phase = 2
+            else:
+                phase = 3
+                
+            # Phase transitions
+            if phase == 2 and not p2_transition_done:
+                # Transition to Phase 2: fixed new_lr, no scheduler
                 for param_group in optimizer.param_groups:
-                    param_group['lr'] = ft_lr
-                scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.ft_epochs, eta_min=ft_lr * 0.01)
-                ft_scheduler_initialized = True
-                print(f"Transitioning to FT stage at epoch {epoch}. Reset learning rate to {ft_lr:.6f} and re-initialized scheduler for {args.ft_epochs} epochs.")
+                    param_group['lr'] = args.new_lr
+                scheduler = None
+                p2_transition_done = True
+                print(f"--- Transitioning to Phase 2 at epoch {epoch}. Learning rate set to fixed value {args.new_lr:.6f} (no scheduler). ---")
+                
+            elif phase == 3 and not p3_transition_done:
+                # Transition to Phase 3: QAT starts, verify fixed new_lr, no scheduler
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = args.new_lr
+                scheduler = None
+                p3_transition_done = True
+                print(f"--- Transitioning to Phase 3 (QAT) at epoch {epoch}. Learning rate remains at fixed value {args.new_lr:.6f} (no scheduler). ---")
             
             # Shuffle indices
             indices = torch.randperm(num_frames)
@@ -174,8 +203,8 @@ def main():
                 if optimizer:
                     optimizer.zero_grad()
                 
-                # Apply QAT fake-quantization to weights before forward pass only in FT stage
-                if is_ft:
+                # Apply QAT only in Phase 3
+                if phase == 3:
                     originals = apply_qat(model)
                 
                 outputs = model(batch_indices_device)
@@ -183,8 +212,8 @@ def main():
                 # Compute standard MSE
                 mse = F.mse_loss(outputs, targets)
                 
-                # Use PoseNet-aligned square-root loss in FT stage, standard MSE in base stage
-                if is_ft:
+                # Use PoseNet root loss in Phase 2 and Phase 3, standard MSE in Phase 1
+                if phase in [2, 3]:
                     # Add 1e-12 to prevent NaN errors when taking the derivative of a square root near zero
                     loss = torch.sqrt(10.0 * mse + 1e-12)
                 else:
@@ -192,12 +221,13 @@ def main():
                 
                 loss.backward()
                 
-                # Restore original full-precision weights before optimizer step only in FT stage
-                if is_ft:
+                # Restore original full-precision weights only in Phase 3
+                if phase == 3:
                     restore_qat(model, originals)
                 
-                # Gradient norm clipping to prevent NaNs/exploding gradients under the square-root loss
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                # Gradient clipping: max_norm=1.0 in Phase 1, max_norm=5.0 in Phase 2 & 3
+                clip_val = 1.0 if phase == 1 else 5.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_val)
                 
                 if optimizer:
                     optimizer.step()
@@ -209,8 +239,15 @@ def main():
             
             epoch_loss /= num_frames
             
-            if epoch % 10 == 0 or epoch == args.epochs:
-                stage_str = "FT (QAT+Sqrt)" if is_ft else "Base (MSE)"
+            if epoch % 10 == 0 or epoch == total_epochs:
+                stage_str = f"Phase {phase}"
+                if phase == 1:
+                    stage_str += " (Base MSE)"
+                elif phase == 2:
+                    stage_str += " (PoseNet root loss, no QAT)"
+                elif phase == 3:
+                    stage_str += " (PoseNet root loss, QAT)"
+                
                 lr_curr = optimizer.param_groups[0]['lr']
                 # Calculate gradient norm for debugging / sanity checking
                 grad_norm = 0.0
@@ -218,7 +255,7 @@ def main():
                     if p.grad is not None:
                         grad_norm += p.grad.data.norm(2).item() ** 2
                 grad_norm = grad_norm ** 0.5
-                print(f"Epoch [{epoch}/{args.epochs}] ({stage_str}) | Loss: {epoch_loss:.6f} | LR: {lr_curr:.6f} | Grad Norm: {grad_norm:.6f}")
+                print(f"Epoch [{epoch}/{total_epochs}] ({stage_str}) | Loss: {epoch_loss:.6f} | LR: {lr_curr:.6f} | Grad Norm: {grad_norm:.6f}")
 
         # Quantize and save model state dict along with metadata
         model.eval()
