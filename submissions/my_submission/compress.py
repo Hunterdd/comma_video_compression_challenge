@@ -147,9 +147,19 @@ def main():
         model.train()
         print(f"Starting training on {video_name} for {args.epochs} epochs ({base_epochs} Base epochs + {args.epochs - base_epochs} FT epochs)...")
         
+        ft_scheduler_initialized = False
+        
         for epoch in range(1, args.epochs + 1):
             epoch_loss = 0.0
             is_ft = (epoch > base_epochs)
+            
+            if is_ft and not ft_scheduler_initialized:
+                ft_lr = args.lr * 0.2
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = ft_lr
+                scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.ft_epochs, eta_min=ft_lr * 0.01)
+                ft_scheduler_initialized = True
+                print(f"Transitioning to FT stage at epoch {epoch}. Reset learning rate to {ft_lr:.6f} and re-initialized scheduler for {args.ft_epochs} epochs.")
             
             # Shuffle indices
             indices = torch.randperm(num_frames)
