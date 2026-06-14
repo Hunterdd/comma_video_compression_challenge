@@ -33,19 +33,26 @@ class HNeRVDecoder(nn.Module):
             in_ch = self.channels[i]
             out_ch = self.channels[i + 1]
             
-            # Bottleneck architecture: 1x1 (compress) -> 3x3 (process) -> 1x1 (expand)
-            # A minimum channel limit (e.g., 8) prevents the bottleneck from getting too narrow.
-            mid_ch = max(in_ch // reduction, 8) 
+            # --- PROGRESSIVE APPLICATION ---
+            # Keep early stages (i < 3) dense to preserve structural information.
+            # Apply LRConv only to the later, computationally expensive stages.
+            if i < 3:
+                block = nn.Sequential(
+                    nn.Conv2d(in_ch, out_ch * 4, kernel_size=3, padding=1)
+                )
+            else:
+                # --- LRConv SPATIAL BOTTLENECK ---
+                mid_ch = max(in_ch // reduction, 8) 
+                
+                block = nn.Sequential(
+                    # 1. Compress spatially and channel-wise (3x1 vertical filter)
+                    nn.Conv2d(in_ch, mid_ch, kernel_size=(3, 1), padding=(1, 0)),
+                    SineAct(),
+                    # 2. Expand spatially and channel-wise (1x3 horizontal filter)
+                    nn.Conv2d(mid_ch, out_ch * 4, kernel_size=(1, 3), padding=(0, 1))
+                )
             
-            bottleneck = nn.Sequential(
-                nn.Conv2d(in_ch, mid_ch, kernel_size=1),
-                SineAct(),
-                nn.Conv2d(mid_ch, mid_ch, kernel_size=3, padding=1),
-                SineAct(),
-                nn.Conv2d(mid_ch, out_ch * 4, kernel_size=1) # *4 for PixelShuffle
-            )
-            
-            self.blocks.append(bottleneck)
+            self.blocks.append(block)
             self.skips.append(nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity())
             
         self.ps = nn.PixelShuffle(2)
@@ -67,7 +74,6 @@ class HNeRVDecoder(nn.Module):
             identity = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
             identity = skip(identity)
             
-            # block(x) now passes through the 1x1->3x3->1x1 bottleneck
             x = self.ps(block(x)) 
             x = torch.sin(x + identity)
             
