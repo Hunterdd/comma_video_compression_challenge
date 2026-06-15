@@ -3,20 +3,24 @@ import sys
 class ModelHook:
     def find_spec(self, fullname, path, target=None):
         if fullname == "model":
-            # Remove ourselves to prevent infinite recursion
             sys.meta_path.remove(self)
             try:
-                import importlib
-                # Load the real module from the path
-                mod = importlib.import_module("model")
-                # Patch HNeRVDecoder with HNeRVDecoder_grouped if it exists
-                if hasattr(mod, "HNeRVDecoder_grouped"):
-                    mod.HNeRVDecoder = mod.HNeRVDecoder_grouped
-                    print("[Hook] Successfully patched HNeRVDecoder to HNeRVDecoder_grouped", flush=True)
-                return importlib.util.find_spec("model")
+                import importlib.util
+                spec = importlib.util.find_spec(fullname, path)
+                if spec is not None:
+                    orig_loader = spec.loader
+                    class PatchedLoader:
+                        def create_module(self, spec):
+                            return orig_loader.create_module(spec)
+                        def exec_module(self, module):
+                            orig_loader.exec_module(module)
+                            if hasattr(module, "HNeRVDecoder_grouped"):
+                                module.HNeRVDecoder = module.HNeRVDecoder_grouped
+                                print("[Hook] Successfully patched HNeRVDecoder to HNeRVDecoder_grouped", flush=True)
+                    spec.loader = PatchedLoader()
+                return spec
             finally:
                 sys.meta_path.insert(0, self)
         return None
 
-# Install the import hook
 sys.meta_path.insert(0, ModelHook())

@@ -30,8 +30,16 @@ class HNeRVDecoder(nn.Module):
         self.base_h, self.base_w = 6, 8
         C = base_channels
 
-        # 7 stages from 6x8 to 384x512; channel taper matches HNeRV paper
-        self.channels = [C, C, C, int(C * 0.75), int(C * 0.58), int(C * 0.5), int(C * 0.5)]
+        # Enforce divisibility by 4 on all channel counts to prevent grouping runtime errors
+        self.channels = [
+            C, 
+            C, 
+            C, 
+            make_divisible(C * 0.75),   # 27 becomes 28
+            make_divisible(C * 0.58),   # 20 stays 20
+            make_divisible(C * 0.5),    # 18 becomes 20
+            make_divisible(C * 0.5)     # 18 becomes 20
+        ]
 
         # In your __init__:
         stem_channels = 12 # Project to 1/3rd of the base channels initially
@@ -55,6 +63,8 @@ class HNeRVDecoder(nn.Module):
             else:
                 # --- LRConv SPATIAL BOTTLENECK ---
                 mid_ch = max(in_ch // reduction, 8) 
+                # Ensure mid_ch is also divisible by our groups parameter (2)
+                mid_ch = make_divisible(mid_ch, divisor=2) 
                 
                 block = nn.Sequential(
                     # 1. Compress spatially and channel-wise (3x1 vertical filter)
