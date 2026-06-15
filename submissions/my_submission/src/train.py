@@ -35,6 +35,18 @@ from stages import (
     codec_stage,
 )
 
+# Easily change the number of epochs for each stage here
+STAGE_EPOCHS = {
+    1: 4000,
+    2: 6000,
+    3: 2000,
+    4: 1000,
+    5: 10000,
+    6: 3000,
+    7: 4000,
+    8: 6000,
+}
+
 
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,7 +71,8 @@ def main():
     ]
     for i, build in enumerate(builders, start=1):
         stage_out = out_root / f"stage{i}"
-        cfg = build(stage_out) if i == 1 else build(prev, stage_out)
+        eps = STAGE_EPOCHS[i]
+        cfg = build(stage_out, epochs=eps) if i == 1 else build(prev, stage_out, epochs=eps)
         result = train_stage(cfg, device, video_path=video_path,
                              shared_state=shared_state)
         print(f"[Stage {i}] best={result['best_score']:.4f} at ep{result['best_ep']} "
