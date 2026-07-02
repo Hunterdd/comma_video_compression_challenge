@@ -42,9 +42,10 @@ HNERV_SRC     = HERE.parent / "hnerv_muon" / "src"
 
 sys.path.insert(0, str(CHALLENGE_ROOT))
 sys.path.insert(0, str(HNERV_SRC))
+sys.path.insert(0, str(HERE))  # local model.py shadows hnerv_muon's model.py
 
 from codec  import build_archive, parse_archive               # noqa: E402
-from model  import HNeRVDecoder                               # noqa: E402
+from model  import HNeRVDecoder                               # noqa: E402  (→ my_submission/model.py)
 from score  import compute_score, total_video_bytes           # noqa: E402
 from losses import ce_seg_loss, ema_update                    # noqa: E402
 from data   import precompute_targets, get_default_video_path # noqa: E402
@@ -80,6 +81,7 @@ modules.rgb_to_yuv6     = _rgb_to_yuv6_diff
 # Config
 # ---------------------------------------------------------------------------
 BASE_CHANNELS    = 20          # channels = [20,20,20,15,11,10,10]
+STEM_DIM         = 14          # two-stage stem bottleneck (saves ~13K params vs default)
 LATENT_DIM       = 28
 EVAL_SIZE        = (384, 512)
 
@@ -168,7 +170,8 @@ def train_one_model(model_idx: int,
 
     decoder = HNeRVDecoder(latent_dim=LATENT_DIM,
                            base_channels=BASE_CHANNELS,
-                           eval_size=EVAL_SIZE).to(device)
+                           eval_size=EVAL_SIZE,
+                           stem_dim=STEM_DIM).to(device)
     latents    = nn.Parameter(torch.randn(n_pairs, LATENT_DIM, device=device) * 0.1)
     ema_decoder = deepcopy(decoder)
     ema_latents = latents.data.clone()
@@ -249,13 +252,14 @@ def train_one_model(model_idx: int,
             archive = build_archive(
                 ema_decoder.state_dict(), ema_latents.cpu(),
                 meta_dict={"n_pairs": n_pairs, "latent_dim": LATENT_DIM,
-                           "base_channels": BASE_CHANNELS,
+                           "base_channels": BASE_CHANNELS, "stem_dim": STEM_DIM,
                            "eval_size": list(EVAL_SIZE)},
             )
             # Score with projected 3-model size (approximate mid-training signal)
             projected = len(archive) * N_MODELS
             eval_sd, eval_lat, _ = parse_archive(archive)
-            eval_dec = HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE).to(device)
+            eval_dec = HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE,
+                                    stem_dim=STEM_DIM).to(device)
             eval_dec.load_state_dict(eval_sd); eval_dec.eval()
             dist = evaluate_slice(eval_dec, eval_lat.to(device), distortion_net,
                                   video_path, pair_offset=pair_offset, device=device)
@@ -303,7 +307,7 @@ def main():
             fh.write(msg + "\n")
 
     log(f"Device: {device}")
-    log(f"Model: base_channels={BASE_CHANNELS}  channels={HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE).channels}")
+    log(f"Model: base_channels={BASE_CHANNELS}  stem_dim={STEM_DIM}  channels={HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE, STEM_DIM).channels}")
     log(f"3 models × {FRAMES_PER_MODEL} frames ({PAIRS_PER_MODEL} pairs) = 600 frames total")
     log(f"Epochs={EPOCHS}  batch={BATCH_SIZE}  eval_every={EVAL_EVERY}  lr={ADAMW_LR}")
 
@@ -370,7 +374,8 @@ def main():
     seg_sum = 0.0; pose_sum = 0.0
     for k in range(N_MODELS):
         eval_sd, eval_lat, _ = parse_archive(archives[k])
-        eval_dec = HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE).to(device)
+        eval_dec = HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE,
+                                stem_dim=STEM_DIM).to(device)
         eval_dec.load_state_dict(eval_sd); eval_dec.eval()
         dist = evaluate_slice(eval_dec, eval_lat.to(device), distortion_net,
                               video_path, pair_offset=k * PAIRS_PER_MODEL, device=device)
