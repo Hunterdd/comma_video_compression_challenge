@@ -1,0 +1,25 @@
+Device: mps
+Model: HNeRVDecoder(base_channels=21, latent_dim=28)
+  channel schedule: [21, 21, 21, 15, 12, 10, 10]
+Training on first 200 frames = 100 pairs
+Score projection: archive x3 (3 models cover 600 frames)
+Video: /Users/dhruv/Desktop/comma/comma_video_compression_challenge/videos/0.mkv
+
+Precomputing targets (full video, then slicing to first 100 pairs)...
+  Full video pairs: 600
+  Total video bytes: 37,545,489
+
+Model params: 89,193
+
+Training 300 epochs, batch=8, lr=0.001, eval_every=25
+
+  ep  10/300  loss=18.5859  lr=9.97e-04  (191s)
+  ep  20/300  loss=9.0903  lr=9.89e-04  (525s)
+  >>> ep  25  score=81.1318  seg=0.50658  pose=91.748240  1-model=92,178B  3-model=276,534B *** BEST
+  ep  30/300  loss=8.6062  lr=9.76e-04  (842s)
+  ep  40/300  loss=6.3064  lr=9.57e-04  (1174s)
+  ep  50/300  loss=4.2261  lr=9.33e-04  (1475s)
+  >>> ep  50  score=28.3713  seg=0.03198  pose=62.458930  1-model=91,001B  3-model=273,003B *** BEST
+  ep  60/300  loss=3.6817  lr=9.05e-04  (1836s)
+  ep  70/300  loss=3.0055  lr=8.72e-04  (2121s)
+  >>> ep  75  score=25.6378  seg=0.02865  pose=51.048561  1-model=89,379B  3-model=268,137B *** BEST
