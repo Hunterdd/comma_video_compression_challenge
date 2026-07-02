@@ -173,9 +173,16 @@ def train_one_model(model_idx: int,
     ema_decoder = deepcopy(decoder)
     ema_latents = latents.data.clone()
 
-    # Compile for A100 speed (deepcopy done first so EMA model is uncompiled)
+    # Compile for A100 speed (deepcopy done first so EMA model is uncompiled).
+    # torch.compile's inductor backend requires 'setuptools' for C++ guard codegen;
+    # fall back to eager if it's missing (training still runs correctly).
     if device.type == "cuda":
-        decoder = torch.compile(decoder)
+        try:
+            import setuptools  # noqa: F401
+            decoder = torch.compile(decoder)
+            log("  torch.compile: enabled")
+        except ImportError:
+            log("  torch.compile: disabled (pip install setuptools to enable)")
 
     optimizer = torch.optim.AdamW(
         [{'params': decoder.parameters(), 'lr': ADAMW_LR},
@@ -280,10 +287,11 @@ def main():
     log_path = OUT_DIR / "train_log.txt"
     log_path.write_text("")
 
-    # A100 tuning
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.benchmark        = True
-    torch.set_float32_matmul_precision("high")
+    # A100 tuning — new-style TF32 API (avoids PyTorch 2.9 deprecation warning)
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.fp32_precision = 'tf32'
+        torch.backends.cudnn.fp32_precision       = 'tf32'
+    torch.backends.cudnn.benchmark = True
 
     device = (torch.device("cuda", 0) if torch.cuda.is_available() else
               torch.device("mps")     if torch.backends.mps.is_available() else
