@@ -91,7 +91,7 @@ modules.rgb_to_yuv6     = _rgb_to_yuv6_diff
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BASE_CHANNELS    = 20
+BASE_CHANNELS    = 17          # channels = [17,17,17,12,9,8,8]  ~51K params
 STEM_DIM         = 14
 LATENT_DIM       = 28
 EVAL_SIZE        = (384, 512)
@@ -212,11 +212,12 @@ def evaluate_slice(decoder, latents, distortion_net, video_path,
 # ---------------------------------------------------------------------------
 def train_one_stage(
     model_idx:    int,
+    pair_offset:  int,            # absolute pair index into full video
     stage:        StageSpec,
     resume_dir:   Optional[Path],  # None → random init (stage 1 only)
     output_dir:   Path,
-    seg_targets:  torch.Tensor,    # (100,) long, pre-sliced for this model
-    pose_targets: torch.Tensor,    # (100, 6) float, pre-sliced
+    seg_targets:  torch.Tensor,    # (n_pairs,) long, pre-sliced for this model
+    pose_targets: torch.Tensor,    # (n_pairs, 6) float, pre-sliced
     distortion_net,
     video_path:   Path,
     tvb:          int,
@@ -224,8 +225,7 @@ def train_one_stage(
     log:          Callable,
 ):
     """Train one stage for one model. Saves final + best checkpoints."""
-    n_pairs = PAIRS_PER_MODEL
-    pair_offset = model_idx * PAIRS_PER_MODEL
+    n_pairs = len(seg_targets)     # actual pairs for this model (may differ from PAIRS_PER_MODEL)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ----- Build decoder -----
@@ -423,25 +423,33 @@ def main():
     video_path = get_default_video_path()
     log(f"Video  : {video_path}")
 
-    log("\nPrecomputing SegNet/PoseNet targets for all 300 pairs...")
+    log("\nPrecomputing SegNet/PoseNet targets...")
     distortion_net, seg_all, pose_all, _, n_pairs_full = (
         precompute_targets(video_path, device))
-    log(f"  Full video pairs: {n_pairs_full}")
+    log(f"  Full video pairs: {n_pairs_full} ({n_pairs_full*2} frames)")
     tvb = total_video_bytes(video_path)
     log(f"  Total video bytes: {tvb:,}\n")
+
+    # Distribute pairs evenly; last model absorbs any remainder
+    base = n_pairs_full // N_MODELS
+    rem  = n_pairs_full % N_MODELS
+    pairs_by_model  = [base + (1 if i < rem else 0) for i in range(N_MODELS)]
+    offsets_by_model = [sum(pairs_by_model[:i]) for i in range(N_MODELS)]
+    log(f"  Pairs per model : {pairs_by_model}  (sum={sum(pairs_by_model)})")
+    log(f"  Pair offsets    : {offsets_by_model}")
 
     t_global = time.time()
 
     for k in range(N_MODELS):
-        lo = k * PAIRS_PER_MODEL
-        hi = lo + PAIRS_PER_MODEL
+        lo = offsets_by_model[k]
+        hi = lo + pairs_by_model[k]
         seg_k  = seg_all[lo:hi]
         pose_k = pose_all[lo:hi]
         model_dir = OUT_DIR / f"model_{k}"
         model_dir.mkdir(exist_ok=True)
 
         log(f"\n{'='*70}")
-        log(f"MODEL {k}/{N_MODELS-1}  pairs [{lo},{hi})  frames [{lo*2},{hi*2})")
+        log(f"MODEL {k}/{N_MODELS-1}  pairs [{lo},{hi})  n={pairs_by_model[k]}  frames [{lo*2},{hi*2})")
         log(f"{'='*70}")
 
         for s_idx, stage in enumerate(STAGES):
@@ -465,6 +473,7 @@ def main():
 
             train_one_stage(
                 model_idx=k,
+                pair_offset=offsets_by_model[k],
                 stage=stage,
                 resume_dir=resume_dir,
                 output_dir=stage_dir,

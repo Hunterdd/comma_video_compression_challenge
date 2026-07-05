@@ -80,7 +80,7 @@ modules.rgb_to_yuv6     = _rgb_to_yuv6_diff
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BASE_CHANNELS    = 20          # channels = [20,20,20,15,11,10,10]
+BASE_CHANNELS    = 17          # channels = [17,17,17,12,9,8,8]  ~51K params
 STEM_DIM         = 14          # two-stage stem bottleneck (saves ~13K params vs default)
 LATENT_DIM       = 28
 EVAL_SIZE        = (384, 512)
