@@ -1,40 +1,40 @@
 #!/usr/bin/env bash
-# Inflate and score our 3-model ensemble at a specific training stage.
+# Must produce a raw video file at <output_dir>/<base_name>.raw.
+# A .raw file is a flat binary dump of uint8 RGB frames, shape (N, H, W, 3),
+# where H=874 W=1164, no header.
 #
-# Usage (from challenge root):
-#   bash submissions/my_submission/inflate.sh          # scores stage 8 (final)
-#   bash submissions/my_submission/inflate.sh 1        # scores after stage 1
-#   bash submissions/my_submission/inflate.sh 5        # scores after stage 5
-#
-# Stages:
-#   1=CE  2=Softplus  3=Smooth  4=Smooth+QAT
-#   5=L7+C1a(λ=0.01)  6=L7+C1a(λ=0.02)  7=L7+C1a(σ=0.1)  8=Muon
+# Called by evaluate.sh as:
+#   bash submissions/my_submission/inflate.sh <archive_dir> <output_dir> <file_list>
+set -euo pipefail
 
-set -e
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
+SUB_NAME="$(basename "$HERE")"
 
-STAGE=${1:-8}
+DATA_DIR="$1"
+OUTPUT_DIR="$2"
+FILE_LIST="$3"
 
-echo "============================================================"
-echo "Scoring ensemble at stage ${STAGE}"
-echo "============================================================"
+mkdir -p "$OUTPUT_DIR"
 
-# Run from challenge root
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHALLENGE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-cd "${CHALLENGE_ROOT}"
-
-# Use venv Python if present, otherwise fall back to system Python
-if [ -f ".venv/bin/python" ]; then
-    PYTHON=".venv/bin/python"
-elif [ -f ".venv/bin/python3" ]; then
-    PYTHON=".venv/bin/python3"
+# Use venv Python if present, otherwise fall back to system python
+if [ -f "$ROOT/.venv/bin/python" ]; then
+    PYTHON="$ROOT/.venv/bin/python"
+elif [ -f "$ROOT/.venv/bin/python3" ]; then
+    PYTHON="$ROOT/.venv/bin/python3"
 else
-    PYTHON="python3"
+    PYTHON="python"
 fi
 
-echo "Python : ${PYTHON}"
-echo "Root   : ${CHALLENGE_ROOT}"
-echo ""
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  BASE="${line%.*}"
+  SRC="${DATA_DIR}/${BASE}.bin"
+  DST="${OUTPUT_DIR}/${BASE}.raw"
 
-"${PYTHON}" submissions/my_submission/eval_stage.py --stage "${STAGE}"
+  [ ! -f "$SRC" ] && echo "ERROR: ${SRC} not found" >&2 && exit 1
+
+  printf "Inflating %s ... " "$line"
+  cd "$ROOT"
+  "$PYTHON" -m "submissions.${SUB_NAME}.inflate" "$SRC" "$DST"
+done < "$FILE_LIST"
