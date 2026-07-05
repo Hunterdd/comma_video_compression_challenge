@@ -416,8 +416,7 @@ def main():
     log(f"Device : {device}")
     log(f"Model  : base_channels={BASE_CHANNELS}  stem_dim={STEM_DIM}  "
         f"params={sum(p.numel() for p in HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE, STEM_DIM).parameters()):,}")
-    log(f"Setup  : {N_MODELS} models × {FRAMES_PER_MODEL} frames "
-        f"({PAIRS_PER_MODEL} pairs)  batch={BATCH_SIZE}  eval_every={EVAL_EVERY}")
+    log(f"Setup  : {N_MODELS} models  batch={BATCH_SIZE}  eval_every={EVAL_EVERY}  (pairs split dynamically)")
     log(f"Stages : {[s.name for s in STAGES]}")
 
     video_path = get_default_video_path()
@@ -514,7 +513,7 @@ def main():
                                     stem_dim=STEM_DIM).to(device)
             eval_dec.load_state_dict(eval_sd); eval_dec.eval()
             dist = evaluate_slice(eval_dec, eval_lat.to(device), distortion_net,
-                                  video_path, pair_offset=k * PAIRS_PER_MODEL, device=device)
+                                  video_path, pair_offset=offsets_by_model[k], device=device)
             del eval_dec
             if device.type == "cuda":
                 torch.cuda.empty_cache()
