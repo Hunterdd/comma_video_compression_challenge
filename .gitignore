@@ -235,3 +235,9 @@ archive.zip
 archive/
 inflated/
 report.txt
+
+# aider
+.aider.conf.yml
+CONVENTIONS.md
+.aider*
+task.md
