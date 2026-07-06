@@ -29,6 +29,9 @@ class CompactTINCHNeRV(nn.Module):
         self.eval_size = eval_size
         self.base_h, self.base_w = 6, 8
         C = base_channels
+        C3 = int(C * 0.75)   # 20 for base_channels=27
+        C4 = int(C * 0.58)   # 15 for base_channels=27
+        C5 = int(C * 0.5)    # 13 for base_channels=27
 
         # Stem
         self.stem = nn.Linear(latent_dim, C * self.base_h * self.base_w)
@@ -36,44 +39,46 @@ class CompactTINCHNeRV(nn.Module):
         # 2 shared root stages
         self.root_stages = nn.ModuleList([
             TINCStage(C, C),
-            TINCStage(C, C),
+            TINCStage(C, C3),
         ])
 
         # Level 1: 2 branches of 2 stages each
         self.lvl1_stages = nn.ModuleList([
-            nn.ModuleList([TINCStage(C, C), TINCStage(C, C)]) for _ in range(2)
+            nn.ModuleList([
+                TINCStage(C3, C4),
+                TINCStage(C4, C5)
+            ]) for _ in range(2)
         ])
 
         # Level 2: 4 chunks of 2 stages each
         self.lvl2_stages_5 = nn.ModuleList([
-            TINCStage(C, C) for _ in range(4)
+            TINCStage(C5, C5) for _ in range(4)
         ])
         self.lvl2_stages_6 = nn.ModuleList([
-            TINCStage(C, int(C * 0.75)) for _ in range(4)
+            TINCStage(C5, C5) for _ in range(4)
         ])
 
-        # Refinement layers: 4 chunks of Conv2d(final_ch -> final_ch // 2) + Conv2d(final_ch // 2 -> final_ch)
-        final_ch = int(C * 0.75)  # This is 20 for base_channels=27
+        # Refinement layers: 4 chunks of Conv2d(C5 -> C5 // 2) + Conv2d(C5 // 2 -> C5)
         self.refines = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(final_ch, final_ch // 2, 3, padding=1),
-                nn.Conv2d(final_ch // 2, final_ch, 3, padding=1)
+                nn.Conv2d(C5, C5 // 2, 3, padding=1),
+                nn.Conv2d(C5 // 2, C5, 3, padding=1)
             ) for _ in range(4)
         ])
 
         # RGB heads: 4 chunks each
         self.rgb_0_heads = nn.ModuleList([
-            nn.Conv2d(final_ch, 3, 3, padding=1) for _ in range(4)
+            nn.Conv2d(C5, 3, 3, padding=1) for _ in range(4)
         ])
         self.rgb_1_heads = nn.ModuleList([
-            nn.Conv2d(final_ch, 3, 3, padding=1) for _ in range(4)
+            nn.Conv2d(C5, 3, 3, padding=1) for _ in range(4)
         ])
 
         # FiLM conditioning embeddings
         self.film_gamma0 = nn.Embedding(4, C)
         self.film_beta0 = nn.Embedding(4, C)
-        self.film_gamma1 = nn.Embedding(4, C)
-        self.film_beta1 = nn.Embedding(4, C)
+        self.film_gamma1 = nn.Embedding(4, C3)
+        self.film_beta1 = nn.Embedding(4, C3)
 
     def forward(self, z, chunk_id):
         """
