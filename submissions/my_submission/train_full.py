@@ -308,51 +308,51 @@ def train_one_stage(
                 if stage.qat:
                     restore_qat(decoder, originals)
 
-            flat = decoded_pair.reshape(B * 2, 3, EVAL_SIZE[0], EVAL_SIZE[1])
-            up   = F.interpolate(flat, size=(874, 1164), mode='bicubic', align_corners=False)
-            down = F.interpolate(up,   size=(384, 512),  mode='bilinear', align_corners=False)
-            bhwc = down.reshape(B, 2, 3, 384, 512).permute(0, 1, 3, 4, 2)
+                flat = decoded_pair.reshape(B * 2, 3, EVAL_SIZE[0], EVAL_SIZE[1])
+                up   = F.interpolate(flat, size=(874, 1164), mode='bicubic', align_corners=False)
+                down = F.interpolate(up,   size=(384, 512),  mode='bilinear', align_corners=False)
+                bhwc = down.reshape(B, 2, 3, 384, 512).permute(0, 1, 3, 4, 2)
 
-            dc   = bhwc.clamp(0, 255)
-            bhwc = dc + (dc.round() - dc).detach()  # STE rounding
+                dc   = bhwc.clamp(0, 255)
+                bhwc = dc + (dc.round() - dc).detach()  # STE rounding
 
-            posenet_in, segnet_in = distortion_net.preprocess_input(bhwc)
-            seg_out  = distortion_net.segnet(segnet_in)
-            pose_out = distortion_net.posenet(posenet_in)
+                posenet_in, segnet_in = distortion_net.preprocess_input(bhwc)
+                seg_out  = distortion_net.segnet(segnet_in)
+                pose_out = distortion_net.posenet(posenet_in)
 
-            seg_l  = stage.seg_loss(seg_out, seg_targets[idx])
-            pose_l = torch.sqrt(10.0 * F.mse_loss(
-                pose_out['pose'][:, :6], pose_targets[idx]) + 1e-12)
-            loss   = 100.0 * seg_l + pose_l
+                seg_l  = stage.seg_loss(seg_out, seg_targets[idx])
+                pose_l = torch.sqrt(10.0 * F.mse_loss(
+                    pose_out['pose'][:, :6], pose_targets[idx]) + 1e-12)
+                loss   = 100.0 * seg_l + pose_l
 
-            if stage.cat_lambda > 0:
-                ent  = cat_entropy_v2(decoder, sigma=stage.cat_sigma,
-                                      sample_size=2000, device=device)
-                loss = loss + stage.cat_lambda * ent
+                if stage.cat_lambda > 0:
+                    ent  = cat_entropy_v2(decoder, sigma=stage.cat_sigma,
+                                          sample_size=2000, device=device)
+                    loss = loss + stage.cat_lambda * ent
 
-            adamw_opt.zero_grad()
-            if muon_opt is not None:
-                muon_opt.zero_grad()
-            loss.backward()
+                adamw_opt.zero_grad()
+                if muon_opt is not None:
+                    muon_opt.zero_grad()
+                loss.backward()
 
-            # Clip AdamW params (+ latents) and Muon params separately — mirrors common.py.
-            # When Muon is active, latents is already inside adamw_opt.param_groups[1]['params'],
-            # so don't add it again (would double-count its gradient magnitude).
-            if muon_opt is None:
-                torch.nn.utils.clip_grad_norm_(
-                    list(decoder.parameters()) + [latents], GRAD_CLIP)
-            else:
-                adamw_clip = [p for pg in adamw_opt.param_groups for p in pg['params']]
-                torch.nn.utils.clip_grad_norm_(adamw_clip, GRAD_CLIP)
-                torch.nn.utils.clip_grad_norm_(
-                    list(muon_opt.param_groups[0]['params']), GRAD_CLIP)
+                # Clip AdamW params (+ latents) and Muon params separately — mirrors common.py.
+                # When Muon is active, latents is already inside adamw_opt.param_groups[1]['params'],
+                # so don't add it again (would double-count its gradient magnitude).
+                if muon_opt is None:
+                    torch.nn.utils.clip_grad_norm_(
+                        list(decoder.parameters()) + [latents], GRAD_CLIP)
+                else:
+                    adamw_clip = [p for pg in adamw_opt.param_groups for p in pg['params']]
+                    torch.nn.utils.clip_grad_norm_(adamw_clip, GRAD_CLIP)
+                    torch.nn.utils.clip_grad_norm_(
+                        list(muon_opt.param_groups[0]['params']), GRAD_CLIP)
 
-            adamw_opt.step()
-            if muon_opt is not None:
-                muon_opt.step()
+                adamw_opt.step()
+                if muon_opt is not None:
+                    muon_opt.step()
 
-            ema_update(ema_decoder, decoder, ema_latents, latents, decay=EMA_DECAY)
-            epoch_loss += loss.item(); nb += 1
+                ema_update(ema_decoder, decoder, ema_latents, latents, decay=EMA_DECAY)
+                epoch_loss += loss.item(); nb += 1
 
         adamw_sched.step()
         if muon_sched is not None:

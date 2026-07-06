@@ -183,48 +183,48 @@ def train_stage(cfg: StageConfig, device: torch.device,
                 if cfg.use_qat:
                     originals = apply_qat(decoder)
                 decoded_pair = decoder(latents[idx], chunk_id_tensor)
-            if cfg.use_qat:
-                restore_qat(decoder, originals)
+                if cfg.use_qat:
+                    restore_qat(decoder, originals)
 
-            flat = decoded_pair.reshape(B * 2, 3, EVAL_SIZE[0], EVAL_SIZE[1])
-            up = F.interpolate(flat, size=(874, 1164), mode='bicubic', align_corners=False)
-            down = F.interpolate(up, size=(384, 512), mode='bilinear', align_corners=False)
-            decoded_bhwc = down.reshape(B, 2, 3, 384, 512).permute(0, 1, 3, 4, 2)
+                flat = decoded_pair.reshape(B * 2, 3, EVAL_SIZE[0], EVAL_SIZE[1])
+                up = F.interpolate(flat, size=(874, 1164), mode='bicubic', align_corners=False)
+                down = F.interpolate(up, size=(384, 512), mode='bilinear', align_corners=False)
+                decoded_bhwc = down.reshape(B, 2, 3, 384, 512).permute(0, 1, 3, 4, 2)
 
-            decoded_clamped = decoded_bhwc.clamp(0, 255)
-            decoded_rounded = decoded_clamped.round()
-            decoded_bhwc = decoded_clamped + (decoded_rounded - decoded_clamped).detach()
+                decoded_clamped = decoded_bhwc.clamp(0, 255)
+                decoded_rounded = decoded_clamped.round()
+                decoded_bhwc = decoded_clamped + (decoded_rounded - decoded_clamped).detach()
 
-            posenet_in, segnet_in = distortion_net.preprocess_input(decoded_bhwc)
-            seg_out = distortion_net.segnet(segnet_in)
-            pose_out = distortion_net.posenet(posenet_in)
+                posenet_in, segnet_in = distortion_net.preprocess_input(decoded_bhwc)
+                seg_out = distortion_net.segnet(segnet_in)
+                pose_out = distortion_net.posenet(posenet_in)
 
-            seg_l = cfg.seg_loss_fn(seg_out, seg_targets_hard[idx])
-            pose_mse = F.mse_loss(pose_out['pose'][:, :6], pose_targets[idx])
-            pose_l = torch.sqrt(10.0 * pose_mse + 1e-12)
+                seg_l = cfg.seg_loss_fn(seg_out, seg_targets_hard[idx])
+                pose_mse = F.mse_loss(pose_out['pose'][:, :6], pose_targets[idx])
+                pose_l = torch.sqrt(10.0 * pose_mse + 1e-12)
 
-            loss = cfg.seg_weight * seg_l + cfg.pose_weight * pose_l
-            if cfg.cat_lambda > 0:
-                ent = cat_entropy_v2(decoder, sigma=cfg.cat_sigma, sample_size=2000,
-                                     device=device)
-                loss = loss + cfg.cat_lambda * ent
+                loss = cfg.seg_weight * seg_l + cfg.pose_weight * pose_l
+                if cfg.cat_lambda > 0:
+                    ent = cat_entropy_v2(decoder, sigma=cfg.cat_sigma, sample_size=2000,
+                                         device=device)
+                    loss = loss + cfg.cat_lambda * ent
 
-            adamw_opt.zero_grad()
-            if muon_opt is not None:
-                muon_opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(adamw_params + [latents], cfg.grad_clip)
-            if muon_opt is not None and cfg.grad_clip_muon is not None:
-                torch.nn.utils.clip_grad_norm_(muon_params, cfg.grad_clip_muon)
-            adamw_opt.step()
-            if muon_opt is not None:
-                muon_opt.step()
+                adamw_opt.zero_grad()
+                if muon_opt is not None:
+                    muon_opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(adamw_params + [latents], cfg.grad_clip)
+                if muon_opt is not None and cfg.grad_clip_muon is not None:
+                    torch.nn.utils.clip_grad_norm_(muon_params, cfg.grad_clip_muon)
+                adamw_opt.step()
+                if muon_opt is not None:
+                    muon_opt.step()
 
-            ema_update(ema_decoder, decoder, ema_latents, latents, decay=cfg.ema_decay)
+                ema_update(ema_decoder, decoder, ema_latents, latents, decay=cfg.ema_decay)
 
-            epoch_loss += loss.item()
-            epoch_pose += pose_mse.item()
-            nb += 1
+                epoch_loss += loss.item()
+                epoch_pose += pose_mse.item()
+                nb += 1
 
         adamw_sched.step()
         if muon_opt is not None:
