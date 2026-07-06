@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "hnerv_muon" / "src")) # codec, score, etc.
 sys.path.insert(0, str(HERE))                               # local model.py (stem_dim) — must be last insert to be first in path
 
-from model import HNeRVDecoder   # noqa: E402  (→ my_submission/model.py)
+from model import HNeRVDecoder, CompactTINCHNeRV   # noqa: E402  (→ my_submission/model.py)
 from codec import parse_archive  # noqa: E402
 
 CAMERA_H, CAMERA_W = 874, 1164  # required by the eval harness
@@ -61,11 +61,44 @@ def unpack_archives(data: bytes) -> list[bytes]:
 def _decode_subarchive(archive_bytes: bytes, device: torch.device) -> bytes:
     decoder_sd, latents, meta = parse_archive(archive_bytes)
 
+    model_type = meta.get("model_type", "HNeRV")  # default for legacy archives
+    if model_type == "CompactTINCHNeRV":
+        decoder = CompactTINCHNeRV(
+            latent_dim=meta["latent_dim"],
+            base_channels=meta["base_channels"],
+            eval_size=tuple(meta["eval_size"]),
+        ).to(device)
+        decoder.load_state_dict(decoder_sd)
+        decoder.eval()
+        latents = latents.to(device)
+        n_chunks = meta.get("n_chunks", 4)
+        pairs_per_chunk = meta["n_pairs"] // n_chunks
+        chunks = []
+        for chunk_id in range(n_chunks):
+            chunk_start = chunk_id * pairs_per_chunk
+            chunk_end = min((chunk_id + 1) * pairs_per_chunk, meta["n_pairs"])
+            if chunk_id == n_chunks - 1:
+                chunk_end = meta["n_pairs"]
+            chunk_id_tensor = torch.tensor([chunk_id], device=device)
+            for i in range(chunk_start, chunk_end, 16):
+                j = min(i + 16, chunk_end)
+                B = j - i
+                decoded = decoder(latents[i:j], chunk_id_tensor)  # (B,2,3,H,W)
+                flat = decoded.reshape(B * 2, 3, meta["eval_size"][0], meta["eval_size"][1])
+                up = F.interpolate(flat, size=(CAMERA_H, CAMERA_W),
+                                   mode="bicubic", align_corners=False)
+                frames = (up.clamp(0, 255)
+                            .permute(0, 2, 3, 1)
+                            .round().to(torch.uint8).cpu().numpy())
+                chunks.append(frames.tobytes())
+        return b"".join(chunks)
+
+    # Original HNeRV fallback (no chunking)
     decoder = HNeRVDecoder(
         latent_dim=meta["latent_dim"],
         base_channels=meta["base_channels"],
         eval_size=tuple(meta["eval_size"]),
-        stem_dim=meta.get("stem_dim", 14),  # default for older archives
+        stem_dim=meta.get("stem_dim", 14),
     ).to(device)
     decoder.load_state_dict(decoder_sd)
     decoder.eval()

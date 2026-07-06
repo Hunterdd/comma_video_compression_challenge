@@ -36,8 +36,9 @@ def run_codec_stage(prev_stage_output_dir: Path, final_output_dir: Path,
 
     archive = build_archive(
         decoder_sd, latents,
-        meta_dict={"n_pairs": n_pairs, "latent_dim": 28, "base_channels": 36,
-                   "eval_size": list(EVAL_SIZE)},
+        meta_dict={"n_pairs": n_pairs, "latent_dim": 28,
+                   "model_type": "CompactTINCHNeRV", "base_channels": 27,
+                   "n_chunks": 4, "eval_size": list(EVAL_SIZE)},
     )
     archive_bytes = len(archive)
 

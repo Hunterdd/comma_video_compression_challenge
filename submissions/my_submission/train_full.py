@@ -50,7 +50,7 @@ sys.path.insert(0, str(HNERV_SRC))
 sys.path.insert(0, str(HERE))  # my_submission/model.py shadows hnerv_muon/src/model.py
 
 from codec  import build_archive, parse_archive                # noqa: E402
-from model  import HNeRVDecoder                                # noqa: E402  (→ local model.py)
+from model  import CompactTINCHNeRV                            # noqa: E402  (→ local model.py)
 from score  import compute_score, total_video_bytes            # noqa: E402
 from optim  import Muon, partition_params_for_muon             # noqa: E402
 from losses import (                                           # noqa: E402
@@ -91,14 +91,14 @@ modules.rgb_to_yuv6     = _rgb_to_yuv6_diff
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BASE_CHANNELS    = 22          # channels = [17,17,17,12,9,8,8]  ~51K params
+BASE_CHANNELS    = 27          # CompactTINCHNeRV base channels (~186K params)
 STEM_DIM         = 14
 LATENT_DIM       = 28
 EVAL_SIZE        = (384, 512)
 
-N_MODELS         = 2
-FRAMES_PER_MODEL = 600
-PAIRS_PER_MODEL  = FRAMES_PER_MODEL // 2   # 100
+N_MODELS         = 1           # single network covering all 600 pairs
+FRAMES_PER_MODEL = 1200
+PAIRS_PER_MODEL  = 600         # 600 frame pairs (1200 frames)
 
 BATCH_SIZE       = 32    # A100
 EVAL_EVERY       = 100   # epochs between mid-training score checks
@@ -414,8 +414,8 @@ def main():
             fh.write(msg + "\n")
 
     log(f"Device : {device}")
-    log(f"Model  : base_channels={BASE_CHANNELS}  stem_dim={STEM_DIM}  "
-        f"params={sum(p.numel() for p in HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE, STEM_DIM).parameters()):,}")
+    log(f"Model  : base_channels={BASE_CHANNELS}  "
+        f"params={sum(p.numel() for p in CompactTINCHNeRV(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE).parameters()):,}")
     log(f"Setup  : {N_MODELS} models  batch={BATCH_SIZE}  eval_every={EVAL_EVERY}  (pairs split dynamically)")
     log(f"Stages : {[s.name for s in STAGES]}")
 

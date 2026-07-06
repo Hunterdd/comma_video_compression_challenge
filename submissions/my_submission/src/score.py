@@ -33,9 +33,10 @@ def _decoded_to_camera(decoded_native, target_h=CAMERA_H, target_w=CAMERA_W):
 
 @torch.inference_mode()
 def evaluate_decoder(decoder, latents, distortion_net, video_path,
-                     batch_pairs=8, device='cuda'):
-    """Stream-decode the GT video and the decoder output simultaneously, accumulate
-    per-pair distortions via DistortionNet.compute_distortion.
+                     batch_pairs=8, device='cuda', n_chunks=4):
+    """Stream-decode the GT video and the decoder output chunk-by-chunk.
+
+    Expects a CompactTINCHNeRV decoder that requires a chunk_id tensor.
 
     Returns:
         dict with seg_distortion (mean), pose_distortion (mean)
@@ -44,61 +45,51 @@ def evaluate_decoder(decoder, latents, distortion_net, video_path,
 
     decoder.eval()
     n_pairs = latents.shape[0]
+    pairs_per_chunk = n_pairs // n_chunks
 
-    # Stream GT pairs from video
+    # Read all GT frames into memory (fine for 600 pairs on GPU)
     container = av.open(str(video_path))
-    gt_pairs_iter_state = {'prev': None, 'pair_idx': 0}
+    frames = []
+    for frame in container.decode(container.streams.video[0]):
+        f = yuv420_to_rgb(frame)
+        frames.append(f)
+    container.close()
+
+    # Build GT pairs
+    gt_pairs = []
+    for i in range(0, len(frames) - 1, 2):
+        gt_pairs.append(torch.stack([frames[i], frames[i + 1]]))
+    gt_tensor = torch.stack(gt_pairs)  # (n_pairs, 2, H, W, 3) CPU
+
     seg_total = 0.0
     pose_total = 0.0
     count = 0
 
-    def next_gt_pair():
-        """Yield one (2, H, W, 3) uint8 GT pair from the stream, or None when done."""
-        # Drain frames into pairs lazily
-        for frame in gt_pairs_iter_state.get('frames', iter(())):
-            f = yuv420_to_rgb(frame)
-            if gt_pairs_iter_state['prev'] is None:
-                gt_pairs_iter_state['prev'] = f
-                continue
-            f0, f1 = gt_pairs_iter_state['prev'], f
-            gt_pairs_iter_state['prev'] = None
-            return torch.stack([f0, f1])
-        return None
+    for chunk_id in range(n_chunks):
+        chunk_start = chunk_id * pairs_per_chunk
+        chunk_end = (chunk_id + 1) * pairs_per_chunk
+        if chunk_id == n_chunks - 1:
+            chunk_end = n_pairs   # last chunk absorbs remainder
 
-    # Build flat frame iterator
-    gt_pairs_iter_state['frames'] = container.decode(container.streams.video[0])
+        chunk_id_tensor = torch.tensor([chunk_id], device=device)
+        for i in range(chunk_start, chunk_end, batch_pairs):
+            j = min(i + batch_pairs, chunk_end)
+            idx = torch.arange(i, j, device=device)
+            z = latents[idx]
+            decoded = decoder(z, chunk_id_tensor)  # (B, 2, 3, EVAL_H, EVAL_W)
+            B = j - i
+            flat = decoded.reshape(B * 2, 3, EVAL_H, EVAL_W)
+            up = _decoded_to_camera(flat)
+            decoded_bhwc = (up.reshape(B, 2, 3, CAMERA_H, CAMERA_W)
+                              .permute(0, 1, 3, 4, 2)
+                              .clamp(0, 255).round().to(torch.uint8))
 
-    pair_idx = 0
-    while pair_idx < n_pairs:
-        # Collect a batch of GT pairs
-        batch_gt = []
-        for _ in range(min(batch_pairs, n_pairs - pair_idx)):
-            pair = next_gt_pair()
-            if pair is None:
-                break
-            batch_gt.append(pair)
-        if not batch_gt:
-            break
-        batch_gt = torch.stack(batch_gt).to(device)  # (B, 2, H, W, 3) uint8
-        B = batch_gt.shape[0]
+            batch_gt = gt_tensor[i:j].to(device)  # (B, 2, H, W, 3) uint8
+            pose_d, seg_d = distortion_net.compute_distortion(batch_gt, decoded_bhwc)
+            seg_total += seg_d.sum().item()
+            pose_total += pose_d.sum().item()
+            count += B
 
-        # Run decoder on the matching latent batch
-        idx = torch.arange(pair_idx, pair_idx + B, device=device)
-        z = latents[idx]
-        decoded = decoder(z)  # (B, 2, 3, EVAL_H, EVAL_W) float in [0,255]
-        flat = decoded.reshape(B * 2, 3, EVAL_H, EVAL_W)
-        up = _decoded_to_camera(flat)
-        decoded_bhwc = (up.reshape(B, 2, 3, CAMERA_H, CAMERA_W)
-                          .permute(0, 1, 3, 4, 2)
-                          .clamp(0, 255).round().to(torch.uint8))
-
-        pose_d, seg_d = distortion_net.compute_distortion(batch_gt, decoded_bhwc)
-        seg_total += seg_d.sum().item()
-        pose_total += pose_d.sum().item()
-        count += B
-        pair_idx += B
-
-    container.close()
     return {
         'seg_distortion': seg_total / max(count, 1),
         'pose_distortion': pose_total / max(count, 1),

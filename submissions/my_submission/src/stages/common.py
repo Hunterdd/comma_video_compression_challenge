@@ -32,7 +32,7 @@ import torch.nn.functional as F
 HERE = Path(__file__).resolve()
 sys.path.insert(0, str(HERE.parent.parent))
 
-from model import HNeRVDecoder
+from model import CompactTINCHNeRV
 from optim import Muon, partition_params_for_muon
 from losses import (
     cat_entropy_v2,
@@ -87,7 +87,7 @@ def train_stage(cfg: StageConfig, device: torch.device,
     if cfg.output_dir is not None:
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
-    decoder = HNeRVDecoder(latent_dim=28, base_channels=36, eval_size=EVAL_SIZE).to(device)
+    decoder = CompactTINCHNeRV(latent_dim=28, base_channels=27, eval_size=EVAL_SIZE).to(device)
 
     if shared_state and 'distortion_net' in shared_state and shared_state.get('video_path') == video_path:
         distortion_net = shared_state['distortion_net']
@@ -163,15 +163,26 @@ def train_stage(cfg: StageConfig, device: torch.device,
 
     for epoch in range(cfg.epochs):
         epoch_loss = 0.0; epoch_pose = 0.0; nb = 0
-        pair_indices = torch.randperm(n_pairs, device=device)
 
-        for batch_start in range(0, n_pairs, cfg.batch_size):
-            idx = pair_indices[batch_start:batch_start + cfg.batch_size]
-            B = len(idx)
+        # Per-chunk training: random chunk order, then random pairs within each chunk
+        chunk_order = torch.randperm(4, device=device)
+        for chunk_id in chunk_order:
+            chunk_id_val = chunk_id.item()
+            chunk_start = chunk_id_val * (n_pairs // 4)
+            chunk_end = min((chunk_id_val + 1) * (n_pairs // 4), n_pairs)
+            chunk_pairs = torch.arange(chunk_start, chunk_end, device=device)
+            chunk_perm = torch.randperm(len(chunk_pairs), device=device)
+            for sub_start in range(0, len(chunk_pairs), cfg.batch_size):
+                sub_idx = chunk_pairs[chunk_perm[sub_start:sub_start + cfg.batch_size]]
+                if len(sub_idx) == 0:
+                    continue
+                idx = sub_idx
+                B = len(idx)
+                chunk_id_tensor = chunk_id.unsqueeze(0).to(device)  # (1,) int
 
-            if cfg.use_qat:
-                originals = apply_qat(decoder)
-            decoded_pair = decoder(latents[idx])
+                if cfg.use_qat:
+                    originals = apply_qat(decoder)
+                decoded_pair = decoder(latents[idx], chunk_id_tensor)
             if cfg.use_qat:
                 restore_qat(decoder, originals)
 
@@ -227,15 +238,16 @@ def train_stage(cfg: StageConfig, device: torch.device,
         if (epoch + 1) % cfg.eval_every == 0:
             archive = build_archive(
                 ema_decoder.state_dict(), ema_latents.cpu(),
-                meta_dict={"n_pairs": n_pairs, "latent_dim": 28, "base_channels": 36,
-                           "eval_size": list(EVAL_SIZE)})
+                meta_dict={"n_pairs": n_pairs, "latent_dim": 28,
+                           "model_type": "CompactTINCHNeRV", "base_channels": 27,
+                           "n_chunks": 4, "eval_size": list(EVAL_SIZE)})
             archive_size = len(archive)
             eval_decoder_sd, eval_lat, _ = parse_archive(archive)
-            eval_dec = HNeRVDecoder(latent_dim=28, base_channels=36, eval_size=EVAL_SIZE).to(device)
+            eval_dec = CompactTINCHNeRV(latent_dim=28, base_channels=27, eval_size=EVAL_SIZE).to(device)
             eval_dec.load_state_dict(eval_decoder_sd)
             eval_dec.eval()
             dist = evaluate_decoder(eval_dec, eval_lat.to(device), distortion_net,
-                                    video_path, batch_pairs=8, device=device)
+                                    video_path, batch_pairs=8, device=device, n_chunks=4)
             result = compute_score(dist['seg_distortion'], dist['pose_distortion'],
                                    archive_size, tvb)
             del eval_dec
