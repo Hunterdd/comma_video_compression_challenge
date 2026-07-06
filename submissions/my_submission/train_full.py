@@ -169,7 +169,9 @@ def evaluate_slice(decoder, latents, distortion_net, video_path,
     """Return {'seg_distortion', 'pose_distortion'} for one model's slice."""
     decoder.eval()
     n_pairs = latents.shape[0]
+    pairs_per_chunk = n_pairs // 4
 
+    # Read all GT frames for this slice
     container = av.open(str(video_path))
     stream    = container.decode(container.streams.video[0])
     for _ in range(pair_offset * 2):          # skip to this model's frames
@@ -189,19 +191,26 @@ def evaluate_slice(decoder, latents, distortion_net, video_path,
     container.close()
 
     seg_sum = 0.0; pose_sum = 0.0; count = 0
-    for start in range(0, len(gt_pairs), batch_pairs):
-        batch_gt = torch.stack(gt_pairs[start:start + batch_pairs]).to(device)
-        B = batch_gt.shape[0]
-        decoded  = decoder(latents[start:start + B])
-        flat = decoded.reshape(B * 2, 3, EVAL_SIZE[0], EVAL_SIZE[1])
-        up   = F.interpolate(flat, size=(874, 1164), mode='bicubic', align_corners=False)
-        out  = (up.reshape(B, 2, 3, 874, 1164)
-                   .permute(0, 1, 3, 4, 2)
-                   .clamp(0, 255).round().to(torch.uint8))
-        pose_d, seg_d = distortion_net.compute_distortion(batch_gt, out)
-        seg_sum  += seg_d.sum().item()
-        pose_sum += pose_d.sum().item()
-        count    += B
+    for chunk_id in range(4):
+        chunk_start = chunk_id * pairs_per_chunk
+        chunk_end = (chunk_id + 1) * pairs_per_chunk
+        if chunk_id == 3:
+            chunk_end = n_pairs
+        chunk_id_tensor = torch.tensor([chunk_id], device=device)
+        for start in range(chunk_start, chunk_end, batch_pairs):
+            end = min(start + batch_pairs, chunk_end)
+            B = end - start
+            batch_gt = torch.stack(gt_pairs[start:end]).to(device)
+            decoded  = decoder(latents[start:end], chunk_id_tensor)
+            flat = decoded.reshape(B * 2, 3, EVAL_SIZE[0], EVAL_SIZE[1])
+            up   = F.interpolate(flat, size=(874, 1164), mode='bicubic', align_corners=False)
+            out  = (up.reshape(B, 2, 3, 874, 1164)
+                       .permute(0, 1, 3, 4, 2)
+                       .clamp(0, 255).round().to(torch.uint8))
+            pose_d, seg_d = distortion_net.compute_distortion(batch_gt, out)
+            seg_sum  += seg_d.sum().item()
+            pose_sum += pose_d.sum().item()
+            count    += B
 
     return {'seg_distortion':  seg_sum  / max(count, 1),
             'pose_distortion': pose_sum / max(count, 1)}
@@ -229,8 +238,7 @@ def train_one_stage(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ----- Build decoder -----
-    decoder = HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE,
-                           stem_dim=STEM_DIM).to(device)
+    decoder = CompactTINCHNeRV(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE).to(device)
 
     if resume_dir is None:
         # Stage 1: random init
@@ -279,17 +287,28 @@ def train_one_stage(
 
     for epoch in range(stage.epochs):
         epoch_loss = 0.0; nb = 0
-        perm = torch.randperm(n_pairs, device=device)
 
-        for start in range(0, n_pairs, BATCH_SIZE):
-            idx = perm[start: start + BATCH_SIZE]
-            B   = len(idx)
+        # Per-chunk training: random chunk order, then random pairs within each chunk
+        chunk_order = torch.randperm(4, device=device)
+        for chunk_id in chunk_order:
+            chunk_id_val = chunk_id.item()
+            chunk_start = chunk_id_val * (n_pairs // 4)
+            chunk_end = min((chunk_id_val + 1) * (n_pairs // 4), n_pairs)
+            chunk_pairs = torch.arange(chunk_start, chunk_end, device=device)
+            chunk_perm = torch.randperm(len(chunk_pairs), device=device)
+            for sub_start in range(0, len(chunk_pairs), BATCH_SIZE):
+                sub_idx = chunk_pairs[chunk_perm[sub_start:sub_start + BATCH_SIZE]]
+                if len(sub_idx) == 0:
+                    continue
+                idx = sub_idx
+                B = len(idx)
+                chunk_id_tensor = chunk_id.unsqueeze(0).to(device)  # (1,) int
 
-            if stage.qat:
-                originals = apply_qat(decoder)
-            decoded_pair = decoder(latents[idx])     # (B,2,3,H,W)
-            if stage.qat:
-                restore_qat(decoder, originals)
+                if stage.qat:
+                    originals = apply_qat(decoder)
+                decoded_pair = decoder(latents[idx], chunk_id_tensor)
+                if stage.qat:
+                    restore_qat(decoder, originals)
 
             flat = decoded_pair.reshape(B * 2, 3, EVAL_SIZE[0], EVAL_SIZE[1])
             up   = F.interpolate(flat, size=(874, 1164), mode='bicubic', align_corners=False)
@@ -350,13 +369,12 @@ def train_one_stage(
             archive = build_archive(
                 ema_decoder.state_dict(), ema_latents.cpu(),
                 meta_dict={"n_pairs": n_pairs, "latent_dim": LATENT_DIM,
-                           "base_channels": BASE_CHANNELS, "stem_dim": STEM_DIM,
-                           "eval_size": list(EVAL_SIZE)},
+                           "model_type": "CompactTINCHNeRV", "base_channels": BASE_CHANNELS,
+                           "n_chunks": 4, "eval_size": list(EVAL_SIZE)},
             )
             projected = len(archive) * N_MODELS
             eval_sd, eval_lat, _ = parse_archive(archive)
-            eval_dec = HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE,
-                                    stem_dim=STEM_DIM).to(device)
+            eval_dec = CompactTINCHNeRV(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE).to(device)
             eval_dec.load_state_dict(eval_sd); eval_dec.eval()
             dist = evaluate_slice(eval_dec, eval_lat.to(device), distortion_net,
                                   video_path, pair_offset=pair_offset, device=device)
@@ -509,8 +527,7 @@ def main():
         seg_sum = 0.0; pose_sum = 0.0
         for k in range(N_MODELS):
             eval_sd, eval_lat, _ = parse_archive(archives[k])
-            eval_dec = HNeRVDecoder(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE,
-                                    stem_dim=STEM_DIM).to(device)
+            eval_dec = CompactTINCHNeRV(LATENT_DIM, BASE_CHANNELS, EVAL_SIZE).to(device)
             eval_dec.load_state_dict(eval_sd); eval_dec.eval()
             dist = evaluate_slice(eval_dec, eval_lat.to(device), distortion_net,
                                   video_path, pair_offset=offsets_by_model[k], device=device)
