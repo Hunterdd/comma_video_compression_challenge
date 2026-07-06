@@ -52,12 +52,12 @@ class CompactTINCHNeRV(nn.Module):
             TINCStage(C, int(C * 0.75)) for _ in range(4)
         ])
 
-        # Refinement layers: 4 chunks of 2x Conv2d(10, 10, 3)
-        final_ch = int(C * 0.75)
+        # Refinement layers: 4 chunks of Conv2d(20->10) + Conv2d(10->10)
+        final_ch = int(C * 0.75)  # This is 20 for base_channels=27
         self.refines = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(final_ch, 10, 3, padding=1),
-                nn.Conv2d(10, 10, 3, padding=1),
+                nn.Conv2d(final_ch, 10, 3, padding=1),  # 20 -> 10
+                nn.Conv2d(10, 10, 3, padding=1)         # 10 -> 10
             ) for _ in range(4)
         ])
 
