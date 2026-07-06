@@ -23,7 +23,7 @@ from pathlib import Path
 
 HERE     = Path(__file__).resolve().parent
 FULL_RUN = HERE / "full_run"
-N_MODELS = 3
+N_MODELS = 1
 
 
 def main():

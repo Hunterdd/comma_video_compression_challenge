@@ -39,30 +39,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # ---------------------------------------------------------------------------
-# Paths — local model.py takes priority over hnerv_muon's
+# Paths — local src/ takes priority
 # ---------------------------------------------------------------------------
 HERE           = Path(__file__).resolve().parent
 CHALLENGE_ROOT = HERE.parent.parent
-HNERV_SRC      = HERE.parent / "hnerv_muon" / "src"
 
 sys.path.insert(0, str(CHALLENGE_ROOT))
-sys.path.insert(0, str(HNERV_SRC))
-sys.path.insert(0, str(HERE))  # my_submission/model.py shadows hnerv_muon/src/model.py
+sys.path.insert(0, str(HERE / "src"))
 
-from codec  import build_archive, parse_archive                # noqa: E402
-from model  import CompactTINCHNeRV                            # noqa: E402  (→ local model.py)
-from score  import compute_score, total_video_bytes            # noqa: E402
-from optim  import Muon, partition_params_for_muon             # noqa: E402
-from losses import (                                           # noqa: E402
+from src.codec  import build_archive, parse_archive
+from src.model  import CompactTINCHNeRV
+from src.score  import compute_score, total_video_bytes
+from src.optim  import Muon, partition_params_for_muon
+from src.losses import (
     ce_seg_loss, tau_softplus_seg_loss,
     smooth_disagreement_seg_loss, l7_softplus_seg_loss,
     cat_entropy_v2, apply_qat, restore_qat, ema_update,
 )
-from data   import precompute_targets, get_default_video_path  # noqa: E402
-import frame_utils                                             # noqa: E402
-import modules                                                 # noqa: E402
-import av                                                      # noqa: E402
-from frame_utils import yuv420_to_rgb                         # noqa: E402
+from src.data   import precompute_targets, get_default_video_path
+import frame_utils
+import modules
+import av
+from frame_utils import yuv420_to_rgb
 
 
 # ---------------------------------------------------------------------------

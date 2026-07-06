@@ -119,3 +119,18 @@ class CompactTINCHNeRV(nn.Module):
         f1 = torch.sigmoid(self.rgb_1_heads[chunk_idx](x)) * 255.0
 
         return torch.stack([f0, f1], dim=1)
+
+
+class HNeRVDecoder(nn.Module):
+    """Legacy HNeRV decoder for backward compatibility."""
+    def __init__(self, latent_dim=28, base_channels=36, eval_size=(384, 512), stem_dim=14):
+        super().__init__()
+        self.eval_size = eval_size
+        # Minimal implementation for compatibility
+        # This is just a placeholder - you may need the full implementation
+        # if you have legacy archives to decode
+        pass
+    
+    def forward(self, z):
+        # Placeholder implementation
+        raise NotImplementedError("HNeRVDecoder not fully implemented - use CompactTINCHNeRV")

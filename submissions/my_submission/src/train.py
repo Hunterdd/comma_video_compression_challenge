@@ -16,8 +16,8 @@ from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-HERE = Path(__file__).resolve()
-sys.path.insert(0, str(HERE.parent))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
 import torch
 

@@ -21,11 +21,10 @@ import torch
 import torch.nn.functional as F
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "hnerv_muon" / "src")) # codec, score, etc.
-sys.path.insert(0, str(HERE))                               # local model.py (stem_dim) — must be last insert to be first in path
+sys.path.insert(0, str(HERE / "src"))
 
-from model import HNeRVDecoder, CompactTINCHNeRV   # noqa: E402  (→ my_submission/model.py)
-from codec import parse_archive  # noqa: E402
+from src.model import HNeRVDecoder, CompactTINCHNeRV
+from src.codec import parse_archive
 
 CAMERA_H, CAMERA_W = 874, 1164  # required by the eval harness
 
