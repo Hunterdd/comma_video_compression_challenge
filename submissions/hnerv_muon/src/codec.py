@@ -20,7 +20,25 @@ import torch
 import brotli
 
 
-N_QUANT = 127
+N_QUANT = 7
+
+
+def pack_int4(zz):
+    """Pack a uint8 numpy array with values in [0, 15] into a uint8 array of half size."""
+    if len(zz) % 2 != 0:
+        zz = np.pad(zz, (0, 1), 'constant')
+    packed = (zz[0::2] & 0x0F) | ((zz[1::2] & 0x0F) << 4)
+    return packed
+
+
+def unpack_int4(packed, size):
+    """Unpack a uint8 numpy array of packed 4-bit values back to uint8 array of original size."""
+    low = packed & 0x0F
+    high = (packed >> 4) & 0x0F
+    zz = np.empty(size, dtype=np.uint8)
+    zz[0::2] = low[:(size + 1) // 2]
+    zz[1::2] = high[:size // 2]
+    return zz
 
 
 # ============================================================================
@@ -28,7 +46,7 @@ N_QUANT = 127
 # ============================================================================
 
 def quantize_state_dict(sd, n_quant=N_QUANT):
-    """Per-tensor symmetric INT8 quant. Returns {name: (int8_flat_array, scale, shape)}."""
+    """Per-tensor symmetric INT4 quant. Returns {name: (int8_flat_array, scale, shape)}."""
     out = {}
     for name, tensor in sd.items():
         t = tensor.detach().cpu().float()
@@ -57,7 +75,7 @@ def zigzag_decode_u8(arr_u8):
 # ============================================================================
 
 def encode_decoder(q_sd):
-    """Encode quantized state dict to compressed bytes via zigzag + brotli."""
+    """Encode quantized state dict to compressed bytes via zigzag + packing + brotli."""
     buf = io.BytesIO()
     buf.write(struct.pack("<I", len(q_sd)))
     for name, (q, scale, shape) in q_sd.items():
@@ -67,7 +85,9 @@ def encode_decoder(q_sd):
         for s in shape: buf.write(struct.pack("<I", s))
         buf.write(struct.pack("<f", scale))
         buf.write(struct.pack("<I", q.size))
-        buf.write(zigzag_encode_i8(q).tobytes())
+        zz = zigzag_encode_i8(q)
+        packed_zz = pack_int4(zz)
+        buf.write(packed_zz.tobytes())
     return brotli.compress(buf.getvalue(), quality=11)
 
 
@@ -84,7 +104,9 @@ def decode_decoder(data):
         shape = tuple(struct.unpack("<I", buf.read(4))[0] for _ in range(nd))
         scale = struct.unpack("<f", buf.read(4))[0]
         size = struct.unpack("<I", buf.read(4))[0]
-        zz = np.frombuffer(buf.read(size), dtype=np.uint8)
+        packed_size = (size + 1) // 2
+        packed_zz = np.frombuffer(buf.read(packed_size), dtype=np.uint8)
+        zz = unpack_int4(packed_zz, size)
         q = zigzag_decode_u8(zz)
         sd[name] = torch.from_numpy(q.astype(np.float32).reshape(shape)) * scale
     return sd

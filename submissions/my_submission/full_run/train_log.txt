@@ -1,0 +1,34 @@
+
+======================================================================
+Run started 2026-07-06 17:25:46
+======================================================================
+Device : mps
+Model  : base_channels=20  stem_dim=14  params=70,322
+Setup  : 3 models  batch=32  eval_every=100  (pairs split dynamically)
+Stages : ['s1_ce', 's2_softplus', 's3_smooth', 's4_qat', 's5_c1a', 's6_lambda', 's7_sigma', 's8_muon']
+Video  : /Users/dhruv/Desktop/comma/comma_video_compression_challenge/videos/0.mkv
+
+Precomputing SegNet/PoseNet targets...
+
+======================================================================
+Run started 2026-07-06 17:26:28
+======================================================================
+Device : mps
+Model  : base_channels=28  stem_dim=14  params=129,628
+Setup  : 3 models  batch=32  eval_every=100  (pairs split dynamically)
+Stages : ['s1_ce', 's2_softplus', 's3_smooth', 's4_qat', 's5_c1a', 's6_lambda', 's7_sigma', 's8_muon']
+Video  : /Users/dhruv/Desktop/comma/comma_video_compression_challenge/videos/0.mkv
+
+Precomputing SegNet/PoseNet targets...
+  Full video pairs: 600 (1200 frames)
+  Total video bytes: 37,545,489
+
+  Pairs per model : [200, 200, 200]  (sum=600)
+  Pair offsets    : [0, 200, 400]
+
+======================================================================
+MODEL 0/2  pairs [0,200)  n=200  frames [0,400)
+======================================================================
+
+  [s1_ce]  epochs=3000  lr=0.003  qat=False  muon=False  λ=0.0  σ=0.2
+    Random init

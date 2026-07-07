@@ -79,17 +79,17 @@ def pose_loss(pose_pred, pose_target):
 def cat_entropy_v2(decoder, sigma=0.2, sample_size=2000, device=None):
     """Size-weighted soft histogram entropy.
     For each Conv2d/Linear weight tensor:
-      - quantize to {-127, ..., 127} via Gaussian soft-assignment with bandwidth sigma
+      - quantize to {-7, ..., 7} via Gaussian soft-assignment with bandwidth sigma
       - compute categorical entropy
       - weight by tensor size (numel)
     Returns: weighted mean entropy in bits/weight, averaged across all weight tensors.
 
-    Pushing this down (small sigma + big lambda) sharpens the post-INT8
+    Pushing this down (small sigma + big lambda) sharpens the post-INT4
     distribution at integer grid points.
     """
     if device is None:
         device = next(decoder.parameters()).device
-    bins = torch.arange(-127, 128, device=device, dtype=torch.float32)
+    bins = torch.arange(-7, 8, device=device, dtype=torch.float32)
     total_numel = 0
     weighted_entropy = torch.zeros((), device=device)
     for name, mod in decoder.named_modules():
@@ -99,7 +99,7 @@ def cat_entropy_v2(decoder, sigma=0.2, sample_size=2000, device=None):
             ma = w.abs().max().detach()
             if ma.item() < 1e-12:
                 continue
-            wn = (w / (ma / 127.0)).flatten()
+            wn = (w / (ma / 7.0)).flatten()
             if wn.numel() > sample_size:
                 idx = torch.randperm(wn.numel(), device=wn.device)[:sample_size]
                 wn = wn[idx]
@@ -114,11 +114,11 @@ def cat_entropy_v2(decoder, sigma=0.2, sample_size=2000, device=None):
 
 
 # ============================================================================
-# QAT (INT8 fake-quant with straight-through estimator)
+# QAT (INT4 fake-quant with straight-through estimator)
 # ============================================================================
 
-def fake_quantize(tensor, n_levels=127):
-    """Per-tensor symmetric INT8 fake-quant. STE: forward rounds, backward passes through."""
+def fake_quantize(tensor, n_levels=7):
+    """Per-tensor symmetric INT4 fake-quant. STE: forward rounds, backward passes through."""
     ma = tensor.abs().max()
     scale = ma / n_levels if ma > 0 else 1.0
     q = (tensor / scale).round().clamp(-n_levels, n_levels)

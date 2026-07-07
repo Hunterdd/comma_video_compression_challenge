@@ -91,7 +91,7 @@ modules.rgb_to_yuv6     = _rgb_to_yuv6_diff
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BASE_CHANNELS    = 17          # channels = [17,17,17,12,9,8,8]  ~51K params
+BASE_CHANNELS    = 28         # channels = [17,17,17,12,9,8,8]  ~51K params
 STEM_DIM         = 14
 LATENT_DIM       = 28
 EVAL_SIZE        = (384, 512)
